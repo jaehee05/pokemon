@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>포켓몬 카드 가격 계산기</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>포켓몬 카드 가격 계산기</h1>
+    <p class="subtitle">일련번호를 입력하여 보유 카드를 관리하고 총액을 계산하세요.</p>
+  </header>
+
+  <main>
+    <section class="panel" id="data-panel">
+      <div class="panel-header">
+        <h2>1. 가격 데이터</h2>
+        <span class="data-status" id="data-status">데이터 없음</span>
+      </div>
+
+      <div class="data-actions">
+        <label class="btn">
+          CSV 파일 업로드
+          <input type="file" id="csv-file" accept=".csv,.tsv,.txt" hidden />
+        </label>
+        <button class="btn" id="paste-toggle" type="button">스프레드시트에서 붙여넣기</button>
+        <button class="btn btn-ghost" id="sample-load" type="button">샘플 데이터 보기</button>
+        <button class="btn btn-danger" id="data-clear" type="button">데이터 삭제</button>
+      </div>
+
+      <div class="paste-area hidden" id="paste-area">
+        <p class="hint">구글 스프레드시트에서 헤더(순번, 번호, 카드 이름, 가격)를 포함해 복사한 뒤 아래에 붙여넣으세요.</p>
+        <textarea id="paste-input" rows="8" placeholder="순번&#9;번호&#9;카드 이름&#9;가격(원)&#10;1&#9;sv10 001&#9;피콘&#9;300&#10;..."></textarea>
+        <div class="row-end">
+          <button class="btn" id="paste-apply" type="button">적용</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="add-panel">
+      <div class="panel-header">
+        <h2>2. 카드 추가</h2>
+      </div>
+      <form id="add-form" class="add-form">
+        <input
+          type="text"
+          id="card-input"
+          placeholder="예: SV10 075"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <input type="number" id="qty-input" min="1" step="1" value="1" />
+        <button class="btn btn-primary" type="submit">추가</button>
+      </form>
+      <p class="card-preview" id="card-preview"></p>
+      <ul class="suggestions hidden" id="suggestions"></ul>
+    </section>
+
+    <section class="panel" id="collection-panel">
+      <div class="panel-header">
+        <h2>3. 내 카드 목록</h2>
+        <div class="totals">
+          <span class="totals-count" id="totals-count">0종 / 0장</span>
+          <span class="totals-sum" id="totals-sum">0원</span>
+        </div>
+      </div>
+
+      <div class="collection-actions">
+        <input
+          type="search"
+          id="collection-search"
+          placeholder="카드 이름 또는 번호로 검색"
+        />
+        <button class="btn btn-ghost" id="export-btn" type="button">CSV 내보내기</button>
+        <button class="btn btn-danger" id="collection-clear" type="button">목록 비우기</button>
+      </div>
+
+      <div class="table-wrap">
+        <table id="collection-table">
+          <thead>
+            <tr>
+              <th>번호</th>
+              <th>카드 이름</th>
+              <th class="num">단가</th>
+              <th class="num">수량</th>
+              <th class="num">합계</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="collection-body">
+          </tbody>
+        </table>
+        <p class="empty" id="collection-empty">아직 추가된 카드가 없습니다.</p>
+      </div>
+    </section>
+
+    <section class="panel" id="catalog-panel">
+      <div class="panel-header">
+        <h2>전체 카드 카탈로그</h2>
+        <span class="data-status" id="catalog-count">0건</span>
+      </div>
+      <input
+        type="search"
+        id="catalog-search"
+        placeholder="번호 또는 이름으로 검색"
+      />
+      <div class="table-wrap">
+        <table id="catalog-table">
+          <thead>
+            <tr>
+              <th>번호</th>
+              <th>카드 이름</th>
+              <th class="num">가격</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="catalog-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>데이터는 브라우저(localStorage)에 저장됩니다.</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
