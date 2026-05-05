@@ -5,6 +5,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import {
   doc,
+  getDoc,
   setDoc,
   onSnapshot,
   serverTimestamp,
@@ -12,18 +13,22 @@ import {
 
 // ---------- State ----------
 let userId = null;
-let catalog = new Map();    // key -> { no, name, price }
-let collection = new Map(); // key -> { no, name, price, qty }
+// items: key -> { no, name, grade, value, qty }
+let items = new Map();
 
-let catalogUnsub = null;
-let collectionUnsub = null;
-
-let initialCatalogLoaded = false;
-let initialCollectionLoaded = false;
+let inventoryUnsub = null;
+let initialLoaded = false;
 let migrationAttempted = false;
 
 let pendingSaves = 0;
 let savingTimer = null;
+
+let sortKey = "no";
+let sortDir = 1; // 1 asc, -1 desc
+let activeGrade = "";
+
+const GRADE_ORDER = ["RR", "SR", "SAR", "UR", "AR", "R", "U", "C"];
+const GRADE_RANK = Object.fromEntries(GRADE_ORDER.map((g, i) => [g, i]));
 
 const LEGACY_KEYS = {
   catalog: "pokemon_catalog_v1",
@@ -38,44 +43,46 @@ const els = {
   pasteArea: $("paste-area"),
   pasteInput: $("paste-input"),
   pasteApply: $("paste-apply"),
-  sampleLoad: $("sample-load"),
-  dataClear: $("data-clear"),
-  dataStatus: $("data-status"),
+  pasteCancel: $("paste-cancel"),
 
   addForm: $("add-form"),
-  cardInput: $("card-input"),
-  qtyInput: $("qty-input"),
+  cardNo: $("card-no"),
+  cardName: $("card-name"),
+  cardGrade: $("card-grade"),
+  cardValue: $("card-value"),
+  cardQty: $("card-qty"),
   cardPreview: $("card-preview"),
   suggestions: $("suggestions"),
 
-  collectionBody: $("collection-body"),
-  collectionEmpty: $("collection-empty"),
-  collectionSearch: $("collection-search"),
-  collectionClear: $("collection-clear"),
+  inventoryBody: $("inventory-body"),
+  inventoryEmpty: $("inventory-empty"),
+  inventorySearch: $("inventory-search"),
+  inventoryClear: $("inventory-clear"),
+  inventoryCount: $("inventory-count"),
+  inventoryTable: $("inventory-table"),
   exportBtn: $("export-btn"),
-  totalsCount: $("totals-count"),
-  totalsSum: $("totals-sum"),
 
-  catalogBody: $("catalog-body"),
-  catalogSearch: $("catalog-search"),
-  catalogCount: $("catalog-count"),
+  gradeFilter: $("grade-filter"),
+  statTypes: $("stat-types"),
+  statQty: $("stat-qty"),
+  statValue: $("stat-value"),
+  statGrades: $("stat-grades"),
 
   syncBadge: $("sync-badge"),
   syncText: document.querySelector("#sync-badge .sync-text"),
-
   toast: $("toast"),
 };
 
 // ---------- Helpers ----------
 function normalizeKey(s) {
   if (s == null) return "";
-  return String(s).trim().toLowerCase().replace(/\s+/g, " ");
+  return String(s).trim().toLowerCase().replace(/[\s\-_]+/g, "-");
 }
-function formatPrice(n) {
+function formatWon(n) {
   const v = Number(n) || 0;
-  return v.toLocaleString("ko-KR") + "원";
+  return "₩" + v.toLocaleString("ko-KR");
 }
-function parsePrice(raw) {
+function parseInt0(raw) {
   if (raw == null) return 0;
   const s = String(raw).replace(/[^\d.-]/g, "");
   const n = parseFloat(s);
@@ -90,6 +97,14 @@ function escapeHTML(s) {
     .replace(/'/g, "&#39;");
 }
 const escapeAttr = escapeHTML;
+
+function normalizeGrade(raw) {
+  if (raw == null) return "";
+  const s = String(raw).trim().toUpperCase();
+  if (!s) return "";
+  if (GRADE_RANK[s] != null) return s;
+  return s;
+}
 
 function setSyncStatus(state, text) {
   els.syncBadge.dataset.state = state;
@@ -150,7 +165,7 @@ function parseCSV(text, delimiter) {
   return rows.filter((r) => r.some((v) => String(v).trim() !== ""));
 }
 function findColumnIndex(header, candidates) {
-  const norm = header.map((h) => normalizeKey(h));
+  const norm = header.map((h) => String(h).trim().toLowerCase());
   for (const cand of candidates) {
     const idx = norm.findIndex((h) => h.includes(cand));
     if (idx !== -1) return idx;
@@ -158,7 +173,7 @@ function findColumnIndex(header, candidates) {
   return -1;
 }
 
-async function importCatalogFromText(text) {
+async function importFromText(text) {
   const trimmed = text.trim();
   if (!trimmed) {
     showToast("붙여넣을 내용이 없습니다.", "error");
@@ -171,52 +186,71 @@ async function importCatalogFromText(text) {
     return;
   }
 
-  let header = rows[0].map((h) => normalizeKey(h));
+  let header = rows[0];
   let dataRows = rows.slice(1);
   const looksLikeHeader = header.some((h) =>
-    /번호|이름|가격|순번|name|price|no\.?$|number/i.test(h),
+    /일련번호|번호|카드|등급|가치|가격|수량|보유|name|grade|value|price|qty/i.test(String(h)),
   );
   if (!looksLikeHeader) {
-    header = ["순번", "번호", "카드 이름", "가격"];
+    header = ["일련번호", "카드명", "등급", "가치", "보유 수량"];
     dataRows = rows;
   }
 
-  const noIdx = findColumnIndex(header, ["번호", "no", "number", "code"]);
-  const nameIdx = findColumnIndex(header, ["이름", "name", "카드"]);
-  const priceIdx = findColumnIndex(header, ["가격", "price", "원"]);
+  const noIdx = findColumnIndex(header, ["일련번호", "번호", "no", "number", "code"]);
+  const nameIdx = findColumnIndex(header, ["카드명", "이름", "name", "카드"]);
+  const gradeIdx = findColumnIndex(header, ["등급", "grade", "rarity"]);
+  const valueIdx = findColumnIndex(header, ["가치", "가격", "value", "price", "원"]);
+  const qtyIdx = findColumnIndex(header, ["보유", "수량", "qty", "quantity"]);
 
-  if (noIdx === -1 || priceIdx === -1) {
-    showToast("번호/가격 열을 찾을 수 없습니다. 헤더를 확인해주세요.", "error");
+  if (noIdx === -1) {
+    showToast("일련번호 열을 찾을 수 없습니다.", "error");
     return;
   }
 
-  const next = new Map();
+  const next = new Map(items);
+  let added = 0;
+  let updated = 0;
   for (const r of dataRows) {
     const no = (r[noIdx] || "").trim();
     if (!no) continue;
-    if (normalizeKey(no) === "번호") continue;
+    const key = normalizeKey(no);
+    if (!key) continue;
     const name = nameIdx >= 0 ? (r[nameIdx] || "").trim() : "";
-    const price = parsePrice(r[priceIdx]);
-    next.set(normalizeKey(no), { no, name, price });
+    const grade = gradeIdx >= 0 ? normalizeGrade(r[gradeIdx]) : "";
+    const value = valueIdx >= 0 ? parseInt0(r[valueIdx]) : 0;
+    const qty = qtyIdx >= 0 ? Math.max(0, parseInt0(r[qtyIdx])) : 1;
+
+    const existing = next.get(key);
+    if (existing) updated++;
+    else added++;
+    next.set(key, {
+      no: no,
+      name: name || (existing && existing.name) || "",
+      grade: grade || (existing && existing.grade) || "",
+      value: value || (existing && existing.value) || 0,
+      qty: qty,
+    });
   }
-  if (next.size === 0) {
+  if (added + updated === 0) {
     showToast("유효한 데이터 행이 없습니다.", "error");
     return;
   }
-  catalog = next;
-  await saveCatalog();
-  renderCatalog();
-  updateDataStatus();
-  renderCollection();
-  showToast(`${next.size.toLocaleString("ko-KR")}건의 가격 데이터를 등록했습니다.`, "success");
+  items = next;
+  await saveInventory();
+  renderAll();
+  showToast(`가져오기 완료: 신규 ${added}건, 업데이트 ${updated}건`, "success");
 }
 
 // ---------- Firestore I/O ----------
-function catalogDocRef() {
+function inventoryDocRef() {
+  if (!userId) return null;
+  return doc(db, "users", userId, "data", "inventory");
+}
+function legacyCatalogRef() {
   if (!userId) return null;
   return doc(db, "users", userId, "data", "catalog");
 }
-function collectionDocRef() {
+function legacyCollectionRef() {
   if (!userId) return null;
   return doc(db, "users", userId, "data", "collection");
 }
@@ -227,35 +261,18 @@ function mapToObject(map) {
   return out;
 }
 
-async function saveCatalog() {
-  const ref = catalogDocRef();
+async function saveInventory() {
+  const ref = inventoryDocRef();
   if (!ref) return;
   beginSaving();
   try {
     await setDoc(ref, {
-      items: mapToObject(catalog),
+      items: mapToObject(items),
       updatedAt: serverTimestamp(),
     });
   } catch (e) {
-    console.error("saveCatalog failed", e);
-    showToast("가격 데이터 저장 실패: " + (e.message || e), "error");
-  } finally {
-    endSaving();
-  }
-}
-
-async function saveCollection() {
-  const ref = collectionDocRef();
-  if (!ref) return;
-  beginSaving();
-  try {
-    await setDoc(ref, {
-      items: mapToObject(collection),
-      updatedAt: serverTimestamp(),
-    });
-  } catch (e) {
-    console.error("saveCollection failed", e);
-    showToast("보유 목록 저장 실패: " + (e.message || e), "error");
+    console.error("saveInventory failed", e);
+    showToast("저장 실패: " + (e.message || e), "error");
   } finally {
     endSaving();
   }
@@ -278,257 +295,418 @@ function endSaving() {
 }
 
 function attachListeners(uid) {
-  if (catalogUnsub) catalogUnsub();
-  if (collectionUnsub) collectionUnsub();
+  if (inventoryUnsub) inventoryUnsub();
 
-  catalogUnsub = onSnapshot(
-    catalogDocRef(),
+  inventoryUnsub = onSnapshot(
+    inventoryDocRef(),
     (snap) => {
       const data = snap.exists() ? snap.data() : null;
-      const items = (data && data.items) || {};
-      catalog = new Map(Object.entries(items));
-      updateDataStatus();
-      renderCatalog();
-      renderCollection();
-      if (!initialCatalogLoaded) {
-        initialCatalogLoaded = true;
-        maybeMigrateLegacyData();
-      }
-    },
-    (err) => {
-      console.error("catalog snapshot error", err);
-      setSyncStatus("error", "권한 오류");
-      showToast("가격 데이터 동기화 실패: " + (err.message || err), "error");
-    },
-  );
-
-  collectionUnsub = onSnapshot(
-    collectionDocRef(),
-    (snap) => {
-      const data = snap.exists() ? snap.data() : null;
-      const items = (data && data.items) || {};
-      collection = new Map(Object.entries(items));
-      renderCollection();
-      if (!initialCollectionLoaded) {
-        initialCollectionLoaded = true;
-        maybeMigrateLegacyData();
-      }
+      const obj = (data && data.items) || {};
+      items = new Map(Object.entries(obj));
+      renderAll();
       if (!snap.metadata.hasPendingWrites && pendingSaves === 0) {
         setSyncStatus(navigator.onLine ? "synced" : "offline");
       }
+      if (!initialLoaded) {
+        initialLoaded = true;
+        maybeMigrate();
+      }
     },
     (err) => {
-      console.error("collection snapshot error", err);
+      console.error("inventory snapshot error", err);
       setSyncStatus("error", "권한 오류");
-      showToast("보유 목록 동기화 실패: " + (err.message || err), "error");
+      showToast("동기화 실패: " + (err.message || err), "error");
     },
   );
 }
 
-async function maybeMigrateLegacyData() {
+async function maybeMigrate() {
   if (migrationAttempted) return;
-  if (!initialCatalogLoaded || !initialCollectionLoaded) return;
   migrationAttempted = true;
+  if (items.size > 0) return;
 
-  const oldCatalog = localStorage.getItem(LEGACY_KEYS.catalog);
-  const oldCollection = localStorage.getItem(LEGACY_KEYS.collection);
-  if (!oldCatalog && !oldCollection) return;
-
-  let migrated = false;
+  // 1) Migrate from legacy Firestore catalog+collection
   try {
-    if (oldCatalog && catalog.size === 0) {
-      const obj = JSON.parse(oldCatalog);
-      if (obj && typeof obj === "object") {
-        catalog = new Map(Object.entries(obj));
-        await saveCatalog();
-        migrated = true;
+    const [catalogSnap, collectionSnap] = await Promise.all([
+      getDoc(legacyCatalogRef()),
+      getDoc(legacyCollectionRef()),
+    ]);
+    const catalog = (catalogSnap.exists() && catalogSnap.data().items) || null;
+    const collectionItems = (collectionSnap.exists() && collectionSnap.data().items) || null;
+    if (catalog || collectionItems) {
+      const merged = new Map();
+      // Start with catalog (qty 0)
+      if (catalog) {
+        for (const [k, v] of Object.entries(catalog)) {
+          merged.set(normalizeKey(k), {
+            no: v.no || k,
+            name: v.name || "",
+            grade: "",
+            value: parseInt0(v.price),
+            qty: 0,
+          });
+        }
       }
-    }
-    if (oldCollection && collection.size === 0) {
-      const obj = JSON.parse(oldCollection);
-      if (obj && typeof obj === "object") {
-        collection = new Map(Object.entries(obj));
-        await saveCollection();
-        migrated = true;
+      // Overlay collection (qty + price/name fallback)
+      if (collectionItems) {
+        for (const [k, v] of Object.entries(collectionItems)) {
+          const key = normalizeKey(k);
+          const existing = merged.get(key);
+          merged.set(key, {
+            no: (existing && existing.no) || v.no || k,
+            name: (existing && existing.name) || v.name || "",
+            grade: (existing && existing.grade) || "",
+            value: (existing && existing.value) || parseInt0(v.price),
+            qty: parseInt0(v.qty),
+          });
+        }
+      }
+      // Drop entries with qty 0 AND value 0 to avoid noise
+      for (const [k, v] of merged) {
+        if (!v.qty && !v.value && !v.name) merged.delete(k);
+      }
+      if (merged.size > 0) {
+        items = merged;
+        await saveInventory();
+        showToast(`기존 데이터 ${merged.size}건을 인벤토리로 옮겼습니다.`, "success");
+        return;
       }
     }
   } catch (e) {
-    console.warn("legacy migration failed", e);
-    return;
+    console.warn("legacy firestore migration skipped", e);
   }
 
-  if (migrated) {
-    localStorage.removeItem(LEGACY_KEYS.catalog);
-    localStorage.removeItem(LEGACY_KEYS.collection);
-    showToast("이전 브라우저 저장 데이터를 가져왔습니다.", "success");
+  // 2) Migrate from localStorage legacy data
+  try {
+    const oldCatalog = localStorage.getItem(LEGACY_KEYS.catalog);
+    const oldCollection = localStorage.getItem(LEGACY_KEYS.collection);
+    if (!oldCatalog && !oldCollection) return;
+
+    const merged = new Map();
+    if (oldCatalog) {
+      const obj = JSON.parse(oldCatalog);
+      if (obj && typeof obj === "object") {
+        for (const [k, v] of Object.entries(obj)) {
+          merged.set(normalizeKey(k), {
+            no: v.no || k,
+            name: v.name || "",
+            grade: "",
+            value: parseInt0(v.price),
+            qty: 0,
+          });
+        }
+      }
+    }
+    if (oldCollection) {
+      const obj = JSON.parse(oldCollection);
+      if (obj && typeof obj === "object") {
+        for (const [k, v] of Object.entries(obj)) {
+          const key = normalizeKey(k);
+          const existing = merged.get(key);
+          merged.set(key, {
+            no: (existing && existing.no) || v.no || k,
+            name: (existing && existing.name) || v.name || "",
+            grade: (existing && existing.grade) || "",
+            value: (existing && existing.value) || parseInt0(v.price),
+            qty: parseInt0(v.qty),
+          });
+        }
+      }
+    }
+    for (const [k, v] of merged) {
+      if (!v.qty && !v.value && !v.name) merged.delete(k);
+    }
+    if (merged.size > 0) {
+      items = merged;
+      await saveInventory();
+      localStorage.removeItem(LEGACY_KEYS.catalog);
+      localStorage.removeItem(LEGACY_KEYS.collection);
+      showToast(`이전 브라우저 데이터 ${merged.size}건을 가져왔습니다.`, "success");
+    }
+  } catch (e) {
+    console.warn("localStorage migration failed", e);
   }
 }
 
-// ---------- UI helpers ----------
-function updateDataStatus() {
-  els.dataStatus.textContent =
-    catalog.size > 0 ? `${catalog.size.toLocaleString("ko-KR")}건 로드됨` : "데이터 없음";
-  els.catalogCount.textContent = `${catalog.size.toLocaleString("ko-KR")}건`;
+// ---------- Render ----------
+function renderAll() {
+  renderStats();
+  renderGradeFilter();
+  renderInventory();
 }
 
-function renderCatalog() {
-  const q = normalizeKey(els.catalogSearch.value);
-  const items = [];
-  for (const [key, v] of catalog) {
-    if (!q || key.includes(q) || normalizeKey(v.name).includes(q)) items.push(v);
-  }
-  items.sort((a, b) => a.no.localeCompare(b.no, "ko"));
-  const limit = 200;
-  const shown = items.slice(0, limit);
-  const tbody = els.catalogBody;
-  tbody.innerHTML = "";
-  for (const item of shown) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHTML(item.no)}</td>
-      <td>${escapeHTML(item.name || "")}</td>
-      <td class="num">${formatPrice(item.price)}</td>
-      <td class="num"><button class="icon-btn" data-add="${escapeAttr(item.no)}" title="목록에 추가">＋ 추가</button></td>
-    `;
-    tbody.appendChild(tr);
-  }
-  if (items.length > limit) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="4" class="empty">${items.length - limit}건이 더 있습니다. 검색으로 좁혀보세요.</td>`;
-    tbody.appendChild(tr);
-  }
-  if (items.length === 0) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="4" class="empty">${catalog.size === 0 ? "가격 데이터를 먼저 등록하세요." : "검색 결과가 없습니다."}</td>`;
-    tbody.appendChild(tr);
-  }
-}
-
-function renderCollection() {
-  const tbody = els.collectionBody;
-  tbody.innerHTML = "";
-  const q = normalizeKey(els.collectionSearch.value);
-
+function renderStats() {
   let totalQty = 0;
-  let totalSum = 0;
-  let visibleCount = 0;
-
-  const rows = [];
-  for (const [key, entry] of collection) {
-    const meta = catalog.get(key);
-    rows.push({
-      key,
-      no: meta ? meta.no : entry.no || key,
-      name: meta ? meta.name : entry.name || "",
-      price: meta ? meta.price : entry.price || 0,
-      qty: entry.qty || 0,
-      missing: !meta,
-    });
+  let totalValue = 0;
+  const byGrade = new Map();
+  for (const [, v] of items) {
+    const qty = Number(v.qty) || 0;
+    const val = Number(v.value) || 0;
+    totalQty += qty;
+    totalValue += qty * val;
+    const g = v.grade || "—";
+    const cur = byGrade.get(g) || { types: 0, qty: 0 };
+    cur.types += 1;
+    cur.qty += qty;
+    byGrade.set(g, cur);
   }
-  rows.sort((a, b) => a.no.localeCompare(b.no, "ko"));
+  els.statTypes.textContent = items.size.toLocaleString("ko-KR");
+  els.statQty.textContent = totalQty.toLocaleString("ko-KR");
+  els.statValue.textContent = formatWon(totalValue);
 
-  for (const r of rows) {
-    totalQty += r.qty;
-    totalSum += r.qty * r.price;
-    const matches = !q || normalizeKey(r.no).includes(q) || normalizeKey(r.name).includes(q);
-    if (!matches) continue;
-    visibleCount++;
+  const orderedGrades = Array.from(byGrade.keys()).sort((a, b) => {
+    const ra = GRADE_RANK[a] != null ? GRADE_RANK[a] : 99;
+    const rb = GRADE_RANK[b] != null ? GRADE_RANK[b] : 99;
+    return ra - rb;
+  });
+  els.statGrades.innerHTML = "";
+  for (const g of orderedGrades) {
+    const stat = byGrade.get(g);
+    const pill = document.createElement("div");
+    pill.className = "grade-pill";
+    pill.innerHTML = `
+      <span class="grade-badge ${gradeClass(g)}">${escapeHTML(g)}</span>
+      <span class="grade-pill-text">${stat.types}종 · ${stat.qty}장</span>
+    `;
+    els.statGrades.appendChild(pill);
+  }
+}
+
+function gradeClass(g) {
+  const u = String(g || "").toUpperCase();
+  if (u === "RR") return "g-rr";
+  if (u === "R") return "g-r";
+  if (u === "U") return "g-u";
+  if (u === "C") return "g-u";
+  if (u === "AR") return "g-ar";
+  if (u === "SR") return "g-sr";
+  if (u === "SAR") return "g-sar";
+  if (u === "UR") return "g-ur";
+  return "g-none";
+}
+
+function renderGradeFilter() {
+  const container = els.gradeFilter;
+  const presentGrades = new Set();
+  for (const [, v] of items) presentGrades.add(v.grade || "");
+  const grades = Array.from(presentGrades)
+    .filter((g) => g !== "")
+    .sort((a, b) => {
+      const ra = GRADE_RANK[a] != null ? GRADE_RANK[a] : 99;
+      const rb = GRADE_RANK[b] != null ? GRADE_RANK[b] : 99;
+      return ra - rb;
+    });
+
+  // Preserve existing chips structure: "전체" + grades + (등급없음 if any blanks)
+  container.innerHTML = "";
+  const allBtn = document.createElement("button");
+  allBtn.className = "chip" + (activeGrade === "" ? " active" : "");
+  allBtn.dataset.grade = "";
+  allBtn.textContent = "전체";
+  container.appendChild(allBtn);
+  for (const g of grades) {
+    const btn = document.createElement("button");
+    btn.className = "chip" + (activeGrade === g ? " active" : "");
+    btn.dataset.grade = g;
+    btn.innerHTML = `<span class="grade-badge ${gradeClass(g)}">${escapeHTML(g)}</span>`;
+    container.appendChild(btn);
+  }
+  if (presentGrades.has("")) {
+    const btn = document.createElement("button");
+    btn.className = "chip" + (activeGrade === "__none__" ? " active" : "");
+    btn.dataset.grade = "__none__";
+    btn.textContent = "등급 없음";
+    container.appendChild(btn);
+  }
+}
+
+function compareItems(a, b) {
+  const dir = sortDir;
+  switch (sortKey) {
+    case "no":
+      return a.no.localeCompare(b.no, "ko", { numeric: true }) * dir;
+    case "name":
+      return (a.name || "").localeCompare(b.name || "", "ko") * dir;
+    case "grade": {
+      const ra = GRADE_RANK[a.grade] != null ? GRADE_RANK[a.grade] : 99;
+      const rb = GRADE_RANK[b.grade] != null ? GRADE_RANK[b.grade] : 99;
+      if (ra !== rb) return (ra - rb) * dir;
+      return a.no.localeCompare(b.no, "ko", { numeric: true });
+    }
+    case "value":
+      return ((a.value || 0) - (b.value || 0)) * dir || a.no.localeCompare(b.no, "ko", { numeric: true });
+    case "qty":
+      return ((a.qty || 0) - (b.qty || 0)) * dir || a.no.localeCompare(b.no, "ko", { numeric: true });
+    case "total":
+      return (((a.qty || 0) * (a.value || 0)) - ((b.qty || 0) * (b.value || 0))) * dir
+        || a.no.localeCompare(b.no, "ko", { numeric: true });
+  }
+  return 0;
+}
+
+function renderInventory() {
+  const tbody = els.inventoryBody;
+  tbody.innerHTML = "";
+  const q = String(els.inventorySearch.value || "").trim().toLowerCase();
+
+  const all = [];
+  for (const [key, v] of items) {
+    all.push({ key, ...v });
+  }
+  all.sort(compareItems);
+
+  let filtered = all;
+  if (activeGrade === "__none__") {
+    filtered = filtered.filter((r) => !r.grade);
+  } else if (activeGrade) {
+    filtered = filtered.filter((r) => r.grade === activeGrade);
+  }
+  if (q) {
+    filtered = filtered.filter(
+      (r) =>
+        r.no.toLowerCase().includes(q) ||
+        (r.name || "").toLowerCase().includes(q),
+    );
+  }
+
+  for (const r of filtered) {
+    const total = (r.qty || 0) * (r.value || 0);
     const tr = document.createElement("tr");
+    tr.dataset.key = r.key;
     tr.innerHTML = `
-      <td>${escapeHTML(r.no)}${r.missing ? ' <span class="missing-tag">데이터 없음</span>' : ""}</td>
-      <td>${escapeHTML(r.name)}</td>
-      <td class="num">${formatPrice(r.price)}</td>
-      <td class="num">
-        <input type="number" class="qty-input" min="0" step="1" value="${r.qty}" data-key="${escapeAttr(r.key)}" aria-label="수량" />
-      </td>
-      <td class="num">${formatPrice(r.qty * r.price)}</td>
+      <td class="mono">${escapeHTML(r.no)}</td>
+      <td><span class="cell-edit" data-field="name" tabindex="0">${escapeHTML(r.name || "")}<span class="cell-empty">${r.name ? "" : "이름 없음"}</span></span></td>
       <td>
-        <div class="row-actions">
-          <button class="icon-btn" data-inc="${escapeAttr(r.key)}" title="1장 추가">＋</button>
-          <button class="icon-btn" data-dec="${escapeAttr(r.key)}" title="1장 빼기">－</button>
-          <button class="icon-btn danger" data-remove="${escapeAttr(r.key)}" title="삭제">×</button>
+        <select class="grade-select ${gradeClass(r.grade)}" data-field="grade" aria-label="등급">
+          <option value="" ${!r.grade ? "selected" : ""}>—</option>
+          ${["RR","SR","SAR","UR","AR","R","U","C"].map(g => `<option value="${g}" ${r.grade===g?"selected":""}>${g}</option>`).join("")}
+          ${r.grade && !GRADE_ORDER.includes(r.grade) ? `<option value="${escapeAttr(r.grade)}" selected>${escapeHTML(r.grade)}</option>` : ""}
+        </select>
+      </td>
+      <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가치" /></td>
+      <td class="num">
+        <div class="qty-cell">
+          <button class="icon-btn" data-act="dec" title="−1">−</button>
+          <input type="number" class="qty-input" data-field="qty" min="0" step="1" value="${r.qty || 0}" aria-label="보유 수량" />
+          <button class="icon-btn" data-act="inc" title="+1">+</button>
         </div>
       </td>
+      <td class="num total-cell">${formatWon(total)}</td>
+      <td><button class="icon-btn danger" data-act="remove" title="삭제">×</button></td>
     `;
     tbody.appendChild(tr);
   }
 
-  if (rows.length === 0) {
-    els.collectionEmpty.textContent = "아직 추가된 카드가 없습니다.";
-    els.collectionEmpty.classList.remove("hidden");
-  } else if (visibleCount === 0) {
-    els.collectionEmpty.textContent = "검색 결과가 없습니다.";
-    els.collectionEmpty.classList.remove("hidden");
+  els.inventoryCount.textContent = `${filtered.length.toLocaleString("ko-KR")} / ${items.size.toLocaleString("ko-KR")}건`;
+
+  if (items.size === 0) {
+    els.inventoryEmpty.textContent = "아직 등록된 카드가 없습니다.";
+    els.inventoryEmpty.classList.remove("hidden");
+  } else if (filtered.length === 0) {
+    els.inventoryEmpty.textContent = "조건에 맞는 카드가 없습니다.";
+    els.inventoryEmpty.classList.remove("hidden");
   } else {
-    els.collectionEmpty.classList.add("hidden");
+    els.inventoryEmpty.classList.add("hidden");
   }
 
-  els.totalsCount.textContent = `${rows.length}종 / ${totalQty.toLocaleString("ko-KR")}장`;
-  els.totalsSum.textContent = formatPrice(totalSum);
+  // Update sort indicators
+  const ths = els.inventoryTable.querySelectorAll("th.sortable");
+  ths.forEach((th) => {
+    th.classList.remove("sort-asc", "sort-desc");
+    if (th.dataset.sort === sortKey) {
+      th.classList.add(sortDir === 1 ? "sort-asc" : "sort-desc");
+    }
+  });
 }
 
 // ---------- Mutations ----------
-async function addCardByNo(rawNo, qty = 1) {
-  const key = normalizeKey(rawNo);
+async function upsertCard({ no, name, grade, value, qty }, mode = "merge") {
+  const trimmedNo = String(no || "").trim();
+  const key = normalizeKey(trimmedNo);
   if (!key) return { ok: false, msg: "일련번호를 입력하세요." };
-  const meta = catalog.get(key);
-  const entry = collection.get(key) || { qty: 0 };
-  entry.qty = (entry.qty || 0) + qty;
-  if (meta) {
-    entry.no = meta.no;
-    entry.name = meta.name;
-    entry.price = meta.price;
-  } else {
-    entry.no = entry.no || rawNo.trim();
-    entry.name = entry.name || "";
-    entry.price = entry.price || 0;
-  }
-  if (entry.qty <= 0) collection.delete(key);
-  else collection.set(key, entry);
-  renderCollection();
-  await saveCollection();
-  return {
-    ok: true,
-    meta,
-    msg: meta
-      ? `추가됨: ${meta.no} ${meta.name} (${formatPrice(meta.price)})`
-      : `추가됨: ${rawNo.trim()} (가격 데이터 없음)`,
+  const existing = items.get(key);
+  const next = {
+    no: trimmedNo,
+    name: name != null && name !== "" ? String(name).trim() : (existing ? existing.name : ""),
+    grade: grade != null && grade !== "" ? normalizeGrade(grade) : (existing ? existing.grade : ""),
+    value: value != null && value !== "" ? parseInt0(value) : (existing ? existing.value : 0),
+    qty: 0,
   };
+  const incomingQty = Math.max(0, parseInt0(qty) || 0);
+  if (mode === "merge") {
+    next.qty = (existing ? Math.max(0, parseInt0(existing.qty)) : 0) + incomingQty;
+  } else {
+    next.qty = incomingQty;
+  }
+  if (next.qty <= 0 && mode === "set") {
+    items.delete(key);
+  } else {
+    items.set(key, next);
+  }
+  renderAll();
+  await saveInventory();
+  return { ok: true, item: next, wasNew: !existing };
 }
 
-async function setQty(key, qty) {
+async function updateField(key, field, raw) {
   const k = normalizeKey(key);
-  qty = Math.max(0, Math.floor(Number(qty) || 0));
-  const entry = collection.get(k);
+  const entry = items.get(k);
   if (!entry) return;
-  if (qty === 0) collection.delete(k);
-  else { entry.qty = qty; collection.set(k, entry); }
-  renderCollection();
-  await saveCollection();
+  const next = { ...entry };
+  if (field === "name") next.name = String(raw || "").trim();
+  else if (field === "grade") next.grade = normalizeGrade(raw);
+  else if (field === "value") next.value = Math.max(0, parseInt0(raw));
+  else if (field === "qty") {
+    const q = Math.max(0, parseInt0(raw));
+    if (q === 0) {
+      items.delete(k);
+      renderAll();
+      await saveInventory();
+      return;
+    }
+    next.qty = q;
+  } else return;
+  items.set(k, next);
+  renderAll();
+  await saveInventory();
+}
+
+async function adjustQty(key, delta) {
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  const q = Math.max(0, (parseInt0(entry.qty) || 0) + delta);
+  if (q === 0) items.delete(k);
+  else items.set(k, { ...entry, qty: q });
+  renderAll();
+  await saveInventory();
 }
 
 async function removeCard(key) {
-  collection.delete(normalizeKey(key));
-  renderCollection();
-  await saveCollection();
+  items.delete(normalizeKey(key));
+  renderAll();
+  await saveInventory();
 }
 
 // ---------- Suggestions ----------
 let suggestionIndex = -1;
 function showSuggestions(query) {
-  const q = normalizeKey(query);
+  const q = String(query || "").trim().toLowerCase();
   const list = els.suggestions;
   list.innerHTML = "";
   suggestionIndex = -1;
-  if (!q || catalog.size === 0) {
+  if (!q || items.size === 0) {
     list.classList.add("hidden");
     return;
   }
   const matches = [];
-  for (const [key, v] of catalog) {
-    if (key.includes(q) || normalizeKey(v.name).includes(q)) {
+  for (const [, v] of items) {
+    if (
+      v.no.toLowerCase().includes(q) ||
+      (v.name || "").toLowerCase().includes(q)
+    ) {
       matches.push(v);
-      if (matches.length >= 10) break;
+      if (matches.length >= 8) break;
     }
   }
   if (matches.length === 0) {
@@ -540,7 +718,7 @@ function showSuggestions(query) {
     li.dataset.no = m.no;
     li.innerHTML = `
       <span><span class="no">${escapeHTML(m.no)}</span> &nbsp; ${escapeHTML(m.name || "")}</span>
-      <span class="price">${formatPrice(m.price)}</span>
+      <span class="meta">${m.grade ? `<span class="grade-badge ${gradeClass(m.grade)}">${escapeHTML(m.grade)}</span>` : ""} ${formatWon(m.value || 0)}</span>
     `;
     list.appendChild(li);
   }
@@ -548,66 +726,36 @@ function showSuggestions(query) {
 }
 
 function moveSuggestion(delta) {
-  const items = Array.from(els.suggestions.querySelectorAll("li"));
-  if (items.length === 0) return;
-  suggestionIndex = (suggestionIndex + delta + items.length) % items.length;
-  items.forEach((it, i) => it.classList.toggle("active", i === suggestionIndex));
-  items[suggestionIndex].scrollIntoView({ block: "nearest" });
-}
-
-function previewCard(query) {
-  const q = normalizeKey(query);
-  if (!q) {
-    els.cardPreview.textContent = "";
-    els.cardPreview.classList.remove("found", "error");
-    return;
-  }
-  const meta = catalog.get(q);
-  if (meta) {
-    els.cardPreview.textContent = `${meta.no} · ${meta.name} · ${formatPrice(meta.price)}`;
-    els.cardPreview.classList.add("found");
-    els.cardPreview.classList.remove("error");
-  } else {
-    els.cardPreview.textContent =
-      catalog.size === 0
-        ? "가격 데이터를 먼저 등록하세요."
-        : "일치하는 카드가 없습니다 (가격 0원으로 추가됩니다).";
-    els.cardPreview.classList.remove("found");
-    els.cardPreview.classList.add("error");
-  }
+  const list = Array.from(els.suggestions.querySelectorAll("li"));
+  if (list.length === 0) return;
+  suggestionIndex = (suggestionIndex + delta + list.length) % list.length;
+  list.forEach((it, i) => it.classList.toggle("active", i === suggestionIndex));
+  list[suggestionIndex].scrollIntoView({ block: "nearest" });
 }
 
 // ---------- Export ----------
-function exportCollectionCSV() {
-  if (collection.size === 0) {
-    showToast("내보낼 카드가 없습니다.", "error");
+function exportCSV() {
+  if (items.size === 0) {
+    showToast("내보낼 데이터가 없습니다.", "error");
     return;
   }
-  const rows = [["번호", "카드 이름", "단가", "수량", "합계"]];
+  const rows = [["일련번호", "카드명", "등급", "가치", "보유 수량", "합계"]];
   let total = 0;
-  const items = [];
-  for (const [key, entry] of collection) {
-    const meta = catalog.get(key);
-    items.push({
-      no: meta ? meta.no : entry.no || key,
-      name: meta ? meta.name : entry.name || "",
-      price: meta ? meta.price : entry.price || 0,
-      qty: entry.qty || 0,
-    });
-  }
-  items.sort((a, b) => a.no.localeCompare(b.no, "ko"));
-  for (const r of items) {
-    const sum = r.price * r.qty;
+  const sorted = Array.from(items.values()).sort((a, b) =>
+    a.no.localeCompare(b.no, "ko", { numeric: true }),
+  );
+  for (const r of sorted) {
+    const sum = (r.qty || 0) * (r.value || 0);
     total += sum;
-    rows.push([r.no, r.name, r.price, r.qty, sum]);
+    rows.push([r.no, r.name, r.grade, r.value, r.qty, sum]);
   }
-  rows.push(["", "합계", "", "", total]);
+  rows.push(["", "", "", "", "합계", total]);
   const csv = rows.map((r) => r.map(csvEscape).join(",")).join("\n");
   const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `pokemon-collection-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `pokemon-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -618,43 +766,13 @@ function csvEscape(v) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-// ---------- Sample ----------
-const SAMPLE_DATA =
-`순번\t번호\t카드 이름\t가격(원)
-1\tsv10 001\t피콘\t300
-2\tsv10 002\t버섯꼬\t300
-3\tsv10 003\t버섯모\t300
-4\tsv10 004\t커트로토무\t300
-5\tsv10 005\t짜랑랑\t300
-6\tsv10 006\t라란티스\t500
-7\tsv10 007\t로켓단의 두루지벌레\t300
-8\tsv10 008\t로켓단의 타랜툴라\t800
-9\tsv10 009\t로켓단의 트래피더\t3500
-10\tsv10 010\t미니브\t300
-11\tsv10 011\t올리뇨\t300
-12\tsv10 012\t올리르바ex\t2000
-13\tsv10 013\t가디\t300
-14\tsv10 014\t윈디\t300
-15\tsv10 015\t로켓단의 파이어ex\t2500
-16\tsv10 016\t로켓단의 델빌\t300
-17\tsv10 017\t로켓단의 헬가\t300
-18\tsv10 018\t아차모\t600
-19\tsv10 019\t영치코\t800
-20\tsv10 020\t번치코\t2000
-21\tsv10 021\t히트로토무\t300
-22\tsv10 022\t로켓단의 프리져\t3000
-23\tsv10 023\t진주몽\t300
-24\tsv10 024\t헌테일\t500
-25\tsv10 025\t분홍장이\t800
-26\tsv10 026\t눈쓰개\t300`;
-
 // ---------- Wiring ----------
 els.csvFile.addEventListener("change", (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => {
-    importCatalogFromText(String(reader.result || ""));
+    importFromText(String(reader.result || ""));
     els.csvFile.value = "";
   };
   reader.readAsText(file, "utf-8");
@@ -665,110 +783,207 @@ els.pasteToggle.addEventListener("click", () => {
   if (!els.pasteArea.classList.contains("hidden")) els.pasteInput.focus();
 });
 els.pasteApply.addEventListener("click", () => {
-  importCatalogFromText(els.pasteInput.value);
+  importFromText(els.pasteInput.value);
+  els.pasteInput.value = "";
+  els.pasteArea.classList.add("hidden");
 });
-els.sampleLoad.addEventListener("click", () => {
-  els.pasteArea.classList.remove("hidden");
-  els.pasteInput.value = SAMPLE_DATA;
-  els.pasteInput.focus();
-});
-els.dataClear.addEventListener("click", async () => {
-  if (catalog.size === 0) return;
-  if (!confirm("가격 데이터를 모두 삭제할까요? (보유 목록은 유지됩니다)")) return;
-  catalog = new Map();
-  updateDataStatus();
-  renderCatalog();
-  renderCollection();
-  await saveCatalog();
+els.pasteCancel.addEventListener("click", () => {
+  els.pasteInput.value = "";
+  els.pasteArea.classList.add("hidden");
 });
 
 els.addForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const no = els.cardInput.value.trim();
-  const qty = Math.max(1, parseInt(els.qtyInput.value, 10) || 1);
+  const no = els.cardNo.value.trim();
+  const name = els.cardName.value.trim();
+  const grade = els.cardGrade.value;
+  const value = els.cardValue.value;
+  const qty = Math.max(1, parseInt(els.cardQty.value, 10) || 1);
   if (!no) return;
-  const result = await addCardByNo(no, qty);
+  const result = await upsertCard({ no, name, grade, value, qty }, "merge");
   if (result.ok) {
-    els.cardPreview.textContent = result.msg;
-    els.cardPreview.classList.remove("error");
-    els.cardPreview.classList.add("found");
-    els.cardInput.value = "";
-    els.qtyInput.value = "1";
+    showToast(
+      result.wasNew ? `추가됨: ${result.item.no}` : `수량 업데이트: ${result.item.no} (${result.item.qty}장)`,
+      "success",
+    );
+    els.cardNo.value = "";
+    els.cardName.value = "";
+    els.cardGrade.value = "";
+    els.cardValue.value = "";
+    els.cardQty.value = "1";
     els.suggestions.classList.add("hidden");
-    els.cardInput.focus();
+    els.cardPreview.textContent = "";
+    els.cardPreview.classList.remove("found", "error");
+    els.cardNo.focus();
   } else {
-    els.cardPreview.textContent = result.msg;
-    els.cardPreview.classList.add("error");
+    showToast(result.msg, "error");
   }
 });
 
-els.cardInput.addEventListener("input", (e) => {
+els.cardNo.addEventListener("input", (e) => {
   const v = e.target.value;
   showSuggestions(v);
-  previewCard(v);
+  const key = normalizeKey(v);
+  const existing = key ? items.get(key) : null;
+  if (existing) {
+    els.cardPreview.textContent = `이미 등록된 카드: ${existing.no} ${existing.name || ""} (현재 ${existing.qty}장) — 수량이 합산됩니다.`;
+    els.cardPreview.classList.add("found");
+    els.cardPreview.classList.remove("error");
+  } else {
+    els.cardPreview.textContent = "";
+    els.cardPreview.classList.remove("found", "error");
+  }
 });
-els.cardInput.addEventListener("keydown", (e) => {
+els.cardNo.addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown") { e.preventDefault(); moveSuggestion(1); }
   else if (e.key === "ArrowUp") { e.preventDefault(); moveSuggestion(-1); }
   else if (e.key === "Enter" && suggestionIndex >= 0) {
     e.preventDefault();
-    const items = Array.from(els.suggestions.querySelectorAll("li"));
-    if (items[suggestionIndex]) {
-      els.cardInput.value = items[suggestionIndex].dataset.no;
+    const list = Array.from(els.suggestions.querySelectorAll("li"));
+    if (list[suggestionIndex]) {
+      const no = list[suggestionIndex].dataset.no;
+      els.cardNo.value = no;
       els.suggestions.classList.add("hidden");
-      previewCard(els.cardInput.value);
+      // Pre-fill from existing
+      const existing = items.get(normalizeKey(no));
+      if (existing) {
+        els.cardName.value = existing.name || "";
+        els.cardGrade.value = existing.grade || "";
+        els.cardValue.value = existing.value || "";
+      }
+      els.cardQty.focus();
     }
   } else if (e.key === "Escape") {
     els.suggestions.classList.add("hidden");
   }
 });
-els.cardInput.addEventListener("blur", () => {
+els.cardNo.addEventListener("blur", () => {
   setTimeout(() => els.suggestions.classList.add("hidden"), 150);
 });
-els.cardInput.addEventListener("focus", (e) => {
-  if (e.target.value) showSuggestions(e.target.value);
-});
-
 els.suggestions.addEventListener("mousedown", (e) => {
   const li = e.target.closest("li");
   if (!li) return;
   e.preventDefault();
-  els.cardInput.value = li.dataset.no;
+  const no = li.dataset.no;
+  els.cardNo.value = no;
   els.suggestions.classList.add("hidden");
-  previewCard(li.dataset.no);
-  els.qtyInput.focus();
+  const existing = items.get(normalizeKey(no));
+  if (existing) {
+    els.cardName.value = existing.name || "";
+    els.cardGrade.value = existing.grade || "";
+    els.cardValue.value = existing.value || "";
+  }
+  els.cardQty.focus();
 });
 
-els.collectionBody.addEventListener("click", async (e) => {
-  const inc = e.target.closest("[data-inc]");
-  const dec = e.target.closest("[data-dec]");
-  const rm = e.target.closest("[data-remove]");
-  if (inc) await addCardByNo(inc.dataset.inc, 1);
-  else if (dec) await addCardByNo(dec.dataset.dec, -1);
-  else if (rm) await removeCard(rm.dataset.remove);
-});
-els.collectionBody.addEventListener("change", async (e) => {
-  const input = e.target.closest(".qty-input");
-  if (!input) return;
-  await setQty(input.dataset.key, input.value);
+// Inventory table interactions
+els.inventoryBody.addEventListener("click", async (e) => {
+  const tr = e.target.closest("tr[data-key]");
+  if (!tr) return;
+  const key = tr.dataset.key;
+  const actBtn = e.target.closest("[data-act]");
+  if (actBtn) {
+    const act = actBtn.dataset.act;
+    if (act === "inc") await adjustQty(key, 1);
+    else if (act === "dec") await adjustQty(key, -1);
+    else if (act === "remove") {
+      if (confirm("이 카드를 목록에서 삭제할까요?")) await removeCard(key);
+    }
+    return;
+  }
+  // Inline name edit on click
+  const editEl = e.target.closest(".cell-edit");
+  if (editEl && !editEl.isContentEditable) {
+    startInlineEdit(editEl, tr, "name");
+  }
 });
 
-els.catalogBody.addEventListener("click", async (e) => {
-  const btn = e.target.closest("[data-add]");
-  if (!btn) return;
-  await addCardByNo(btn.dataset.add, 1);
-  showToast(`추가됨: ${btn.dataset.add}`, "success");
+els.inventoryBody.addEventListener("keydown", (e) => {
+  const editEl = e.target.closest(".cell-edit");
+  if (editEl && (e.key === "Enter" || e.key === " ")) {
+    e.preventDefault();
+    const tr = editEl.closest("tr[data-key]");
+    if (tr) startInlineEdit(editEl, tr, "name");
+  }
 });
 
-els.collectionSearch.addEventListener("input", renderCollection);
-els.catalogSearch.addEventListener("input", renderCatalog);
-els.exportBtn.addEventListener("click", exportCollectionCSV);
-els.collectionClear.addEventListener("click", async () => {
-  if (collection.size === 0) return;
-  if (!confirm("보유 카드 목록을 모두 비울까요?")) return;
-  collection = new Map();
-  renderCollection();
-  await saveCollection();
+function startInlineEdit(span, tr, field) {
+  const key = tr.dataset.key;
+  const entry = items.get(normalizeKey(key));
+  const current = entry ? (entry[field] || "") : "";
+  span.contentEditable = "true";
+  span.classList.add("editing");
+  span.textContent = current;
+  // Place cursor at end
+  const range = document.createRange();
+  range.selectNodeContents(span);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  span.focus();
+
+  const finish = async (commit) => {
+    span.removeEventListener("blur", onBlur);
+    span.removeEventListener("keydown", onKey);
+    span.contentEditable = "false";
+    span.classList.remove("editing");
+    if (commit) {
+      const v = span.textContent.trim();
+      await updateField(key, field, v);
+    } else {
+      renderAll();
+    }
+  };
+  const onBlur = () => finish(true);
+  const onKey = (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); finish(true); }
+    else if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
+  };
+  span.addEventListener("blur", onBlur);
+  span.addEventListener("keydown", onKey);
+}
+
+els.inventoryBody.addEventListener("change", async (e) => {
+  const tr = e.target.closest("tr[data-key]");
+  if (!tr) return;
+  const key = tr.dataset.key;
+  const target = e.target;
+  if (target.matches(".grade-select")) {
+    await updateField(key, "grade", target.value);
+  } else if (target.matches(".value-input")) {
+    await updateField(key, "value", target.value);
+  } else if (target.matches(".qty-input")) {
+    await updateField(key, "qty", target.value);
+  }
+});
+
+// Sort
+els.inventoryTable.querySelectorAll("th.sortable").forEach((th) => {
+  th.addEventListener("click", () => {
+    const k = th.dataset.sort;
+    if (sortKey === k) sortDir = -sortDir;
+    else { sortKey = k; sortDir = 1; }
+    renderInventory();
+  });
+});
+
+// Grade filter
+els.gradeFilter.addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  activeGrade = chip.dataset.grade || "";
+  renderAll();
+});
+
+els.inventorySearch.addEventListener("input", renderInventory);
+els.exportBtn.addEventListener("click", exportCSV);
+els.inventoryClear.addEventListener("click", async () => {
+  if (items.size === 0) return;
+  if (!confirm(`전체 인벤토리(${items.size}건)를 삭제할까요? 되돌릴 수 없습니다.`)) return;
+  items = new Map();
+  renderAll();
+  await saveInventory();
 });
 
 window.addEventListener("online", () => {
@@ -796,7 +1011,5 @@ onAuthStateChanged(auth, (user) => {
   }
 });
 
-// Initial render of empty state
-updateDataStatus();
-renderCatalog();
-renderCollection();
+// Initial empty render
+renderAll();

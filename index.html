@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>포켓몬 카드 가격 계산기</title>
-<meta name="description" content="포켓몬 카드 일련번호로 보유 카드를 등록하고 총액을 계산하는 도구." />
+<title>포켓몬 카드 인벤토리</title>
+<meta name="description" content="포켓몬 카드의 일련번호, 등급, 가치, 보유 수량을 한 화면에서 관리하는 인벤토리 도구." />
 <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
 <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin />
 <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin />
@@ -16,11 +16,11 @@
       <div class="hero-text">
         <div class="brand">
           <span class="logo-dot"></span>
-          <span class="brand-name">PokeCalc</span>
+          <span class="brand-name">PokeStock</span>
         </div>
-        <h1>포켓몬 카드 가격 계산기</h1>
+        <h1>포켓몬 카드 인벤토리</h1>
         <p class="subtitle">
-          스프레드시트로 가격을 등록하고, 일련번호로 보유 카드를 추가해 총액을 한눈에 확인하세요.
+          일련번호 · 카드명 · 등급 · 가치 · 보유 수량을 한 곳에서 관리하고, 총 가치를 실시간으로 확인하세요.
         </p>
       </div>
       <div class="sync-badge" id="sync-badge" data-state="connecting" title="동기화 상태">
@@ -31,124 +31,113 @@
   </header>
 
   <main>
-    <section class="panel" id="data-panel">
-      <div class="panel-header">
-        <div>
-          <h2>1. 가격 데이터</h2>
-          <p class="panel-sub">스프레드시트의 가격표를 등록합니다.</p>
-        </div>
-        <span class="data-status" id="data-status">데이터 없음</span>
+    <section class="stats" id="stats">
+      <div class="stat">
+        <span class="stat-label">총 종류</span>
+        <span class="stat-value" id="stat-types">0</span>
       </div>
-
-      <div class="data-actions">
-        <label class="btn">
-          <span>CSV 파일 업로드</span>
-          <input type="file" id="csv-file" accept=".csv,.tsv,.txt" hidden />
-        </label>
-        <button class="btn" id="paste-toggle" type="button">스프레드시트 붙여넣기</button>
-        <button class="btn btn-ghost" id="sample-load" type="button">샘플 데이터</button>
-        <button class="btn btn-danger" id="data-clear" type="button">데이터 삭제</button>
+      <div class="stat">
+        <span class="stat-label">총 보유 매수</span>
+        <span class="stat-value" id="stat-qty">0</span>
       </div>
-
-      <div class="paste-area hidden" id="paste-area">
-        <p class="hint">구글 스프레드시트에서 헤더(<code>순번 / 번호 / 카드 이름 / 가격</code>)를 포함해 복사한 뒤 아래에 붙여넣으세요.</p>
-        <textarea id="paste-input" rows="8" placeholder="순번&#9;번호&#9;카드 이름&#9;가격(원)&#10;1&#9;sv10 001&#9;피콘&#9;300&#10;..."></textarea>
-        <div class="row-end">
-          <button class="btn btn-primary" id="paste-apply" type="button">적용</button>
-        </div>
+      <div class="stat stat-primary">
+        <span class="stat-label">총 가치</span>
+        <span class="stat-value" id="stat-value">₩0</span>
       </div>
+      <div class="stat-grades" id="stat-grades"></div>
     </section>
 
     <section class="panel" id="add-panel">
       <div class="panel-header">
         <div>
-          <h2>2. 카드 추가</h2>
-          <p class="panel-sub">예: <code>SV10 075</code> — 대소문자/공백은 무시됩니다.</p>
+          <h2>카드 추가 / 수정</h2>
+          <p class="panel-sub">같은 일련번호로 추가하면 수량이 합산됩니다. 빈 필드는 자동으로 채워집니다.</p>
         </div>
       </div>
       <form id="add-form" class="add-form" autocomplete="off">
         <div class="add-input-wrap">
           <input
             type="text"
-            id="card-input"
-            placeholder="일련번호 입력 (예: SV10 075)"
+            id="card-no"
+            placeholder="일련번호 (예: sv10-032)"
             autocomplete="off"
             spellcheck="false"
+            required
           />
           <ul class="suggestions hidden" id="suggestions"></ul>
         </div>
-        <input type="number" id="qty-input" min="1" step="1" value="1" aria-label="수량" />
+        <input type="text" id="card-name" placeholder="카드명" autocomplete="off" />
+        <select id="card-grade" aria-label="등급">
+          <option value="">등급</option>
+          <option value="RR">RR</option>
+          <option value="R">R</option>
+          <option value="U">U</option>
+          <option value="AR">AR</option>
+          <option value="C">C</option>
+          <option value="SR">SR</option>
+          <option value="SAR">SAR</option>
+          <option value="UR">UR</option>
+        </select>
+        <input type="number" id="card-value" min="0" step="100" placeholder="가치(원)" />
+        <input type="number" id="card-qty" min="1" step="1" value="1" aria-label="수량" />
         <button class="btn btn-primary" type="submit">추가</button>
       </form>
       <p class="card-preview" id="card-preview"></p>
     </section>
 
-    <section class="panel" id="collection-panel">
+    <section class="panel" id="inventory-panel">
       <div class="panel-header">
         <div>
-          <h2>3. 내 카드 목록</h2>
-          <p class="panel-sub">수량을 직접 조정하거나 검색할 수 있습니다.</p>
+          <h2>보유 카드 목록</h2>
+          <p class="panel-sub">셀을 클릭하면 바로 수정할 수 있습니다. 컬럼 헤더를 클릭하면 정렬됩니다.</p>
         </div>
-        <div class="totals">
-          <span class="totals-count" id="totals-count">0종 / 0장</span>
-          <span class="totals-sum" id="totals-sum">0원</span>
-        </div>
+        <span class="data-status" id="inventory-count">0건</span>
       </div>
 
-      <div class="collection-actions">
+      <div class="filters">
+        <div class="grade-filter" id="grade-filter">
+          <button class="chip active" data-grade="">전체</button>
+        </div>
         <input
           type="search"
-          id="collection-search"
-          placeholder="카드 이름 또는 번호로 검색"
+          id="inventory-search"
+          placeholder="일련번호 또는 카드명 검색"
         />
         <div class="action-spacer"></div>
+        <label class="btn">
+          <span>CSV 가져오기</span>
+          <input type="file" id="csv-file" accept=".csv,.tsv,.txt" hidden />
+        </label>
+        <button class="btn" id="paste-toggle" type="button">붙여넣기</button>
         <button class="btn btn-ghost" id="export-btn" type="button">CSV 내보내기</button>
-        <button class="btn btn-danger" id="collection-clear" type="button">목록 비우기</button>
+        <button class="btn btn-danger" id="inventory-clear" type="button">전체 삭제</button>
       </div>
 
-      <div class="table-wrap">
-        <table id="collection-table">
-          <thead>
-            <tr>
-              <th>번호</th>
-              <th>카드 이름</th>
-              <th class="num">단가</th>
-              <th class="num">수량</th>
-              <th class="num">합계</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="collection-body"></tbody>
-        </table>
-        <p class="empty" id="collection-empty">아직 추가된 카드가 없습니다.</p>
-      </div>
-    </section>
-
-    <section class="panel" id="catalog-panel">
-      <div class="panel-header">
-        <div>
-          <h2>전체 카탈로그</h2>
-          <p class="panel-sub">등록된 가격표에서 카드를 빠르게 추가하세요.</p>
+      <div class="paste-area hidden" id="paste-area">
+        <p class="hint">스프레드시트에서 헤더(<code>일련번호 / 카드명 / 등급 / 가치 / 보유 수량</code>)를 포함해 복사 후 붙여넣으세요.</p>
+        <textarea id="paste-input" rows="8" placeholder="일련번호&#9;카드명&#9;등급&#9;가치&#9;보유 수량&#10;sv10-032&#9;우락고래ex&#9;RR&#9;2000&#9;1"></textarea>
+        <div class="row-end">
+          <button class="btn" id="paste-cancel" type="button">취소</button>
+          <button class="btn btn-primary" id="paste-apply" type="button">적용</button>
         </div>
-        <span class="data-status" id="catalog-count">0건</span>
       </div>
-      <input
-        type="search"
-        id="catalog-search"
-        placeholder="번호 또는 이름으로 검색"
-      />
+
       <div class="table-wrap">
-        <table id="catalog-table">
+        <table id="inventory-table">
           <thead>
             <tr>
-              <th>번호</th>
-              <th>카드 이름</th>
-              <th class="num">가격</th>
+              <th class="sortable" data-sort="no">일련번호 <span class="sort-ind"></span></th>
+              <th class="sortable" data-sort="name">카드명 <span class="sort-ind"></span></th>
+              <th class="sortable" data-sort="grade">등급 <span class="sort-ind"></span></th>
+              <th class="sortable num" data-sort="value">가치 <span class="sort-ind"></span></th>
+              <th class="sortable num" data-sort="qty">보유 <span class="sort-ind"></span></th>
+              <th class="sortable num" data-sort="total">합계 <span class="sort-ind"></span></th>
               <th></th>
             </tr>
           </thead>
-          <tbody id="catalog-body"></tbody>
+          <tbody id="inventory-body"></tbody>
         </table>
+        <p class="empty" id="inventory-empty">아직 등록된 카드가 없습니다.</p>
       </div>
     </section>
   </main>
