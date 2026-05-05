@@ -178,31 +178,6 @@ code {
   border-color: transparent;
 }
 
-/* Read-only banner */
-.auth-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--primary-soft);
-  border: 1px solid #d8dafa;
-  color: var(--text);
-  border-radius: var(--radius);
-  padding: 12px 16px;
-  font-size: 13.5px;
-}
-.auth-banner[hidden] { display: none; }
-.link-btn {
-  background: none;
-  border: none;
-  color: var(--primary);
-  font-weight: 600;
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-  text-decoration: underline;
-}
-.link-btn:hover { color: var(--primary-hover); }
-
 /* Owner-only visibility (default = readonly: hide owner-only elements) */
 body.is-readonly [data-owner-only] { display: none !important; }
 

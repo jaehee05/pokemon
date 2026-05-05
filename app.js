@@ -74,8 +74,6 @@ const els = {
   toast: $("toast"),
 
   authArea: $("auth-area"),
-  authBanner: $("auth-banner"),
-  bannerLogin: $("banner-login"),
 };
 
 // ---------- Helpers ----------
@@ -488,9 +486,6 @@ function applyOwnerMode() {
   const owner = isOwner(currentUser);
   document.body.classList.toggle("is-owner", owner);
   document.body.classList.toggle("is-readonly", !owner);
-  if (els.authBanner) {
-    els.authBanner.hidden = !!currentUser;
-  }
   renderAuthArea();
 }
 
@@ -1108,10 +1103,6 @@ els.inventoryClear.addEventListener("click", async () => {
   renderAll();
   await saveInventory();
 });
-
-if (els.bannerLogin) {
-  els.bannerLogin.addEventListener("click", handleLogin);
-}
 
 window.addEventListener("online", refreshSyncStatus);
 window.addEventListener("offline", () => setSyncStatus("offline"));
