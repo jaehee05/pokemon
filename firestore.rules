@@ -1,7 +1,26 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Per-user data: only the signed-in (anonymous) user can read/write their own data.
+
+    // ── 관리자 이메일 화이트리스트 ─────────────────────────────────────────
+    // 아래 배열에 본인의 Google 이메일을 추가하세요.
+    // (firebase.js 의 OWNER_EMAILS 와 동일하게 유지)
+    function isOwner() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          // 'your-email@gmail.com',
+        ];
+    }
+
+    // ── 공개 인벤토리 ────────────────────────────────────────────────────
+    // 누구나 카드 목록을 읽을 수 있고, 관리자만 수정할 수 있습니다.
+    match /public/{document=**} {
+      allow read: if true;
+      allow write: if isOwner();
+    }
+
+    // ── 사용자별 데이터 (마이그레이션 소스) ────────────────────────────────
     match /users/{uid}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }

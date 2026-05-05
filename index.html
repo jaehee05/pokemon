@@ -23,9 +23,14 @@
           일련번호 · 카드명 · 등급 · 가치 · 보유 수량을 한 곳에서 관리하고, 총 가치를 실시간으로 확인하세요.
         </p>
       </div>
-      <div class="sync-badge" id="sync-badge" data-state="connecting" title="동기화 상태">
-        <span class="sync-dot"></span>
-        <span class="sync-text">연결 중…</span>
+      <div class="hero-actions">
+        <div class="sync-badge" id="sync-badge" data-state="connecting" title="동기화 상태">
+          <span class="sync-dot"></span>
+          <span class="sync-text">연결 중…</span>
+        </div>
+        <div class="auth-area" id="auth-area">
+          <button class="btn btn-light" id="login-btn" type="button" disabled>로그인 준비 중…</button>
+        </div>
       </div>
     </div>
   </header>
@@ -47,7 +52,11 @@
       <div class="stat-grades" id="stat-grades"></div>
     </section>
 
-    <section class="panel" id="add-panel">
+    <div class="auth-banner" id="auth-banner" hidden>
+      <span>👀 읽기 전용 모드입니다. 카드를 추가하거나 수정하려면 <button class="link-btn" id="banner-login" type="button">관리자 로그인</button>을 진행하세요.</span>
+    </div>
+
+    <section class="panel" id="add-panel" data-owner-only>
       <div class="panel-header">
         <div>
           <h2>카드 추가 / 수정</h2>
@@ -104,16 +113,16 @@
           placeholder="일련번호 또는 카드명 검색"
         />
         <div class="action-spacer"></div>
-        <label class="btn">
+        <label class="btn" data-owner-only>
           <span>CSV 가져오기</span>
           <input type="file" id="csv-file" accept=".csv,.tsv,.txt" hidden />
         </label>
-        <button class="btn" id="paste-toggle" type="button">붙여넣기</button>
+        <button class="btn" id="paste-toggle" type="button" data-owner-only>붙여넣기</button>
         <button class="btn btn-ghost" id="export-btn" type="button">CSV 내보내기</button>
-        <button class="btn btn-danger" id="inventory-clear" type="button">전체 삭제</button>
+        <button class="btn btn-danger" id="inventory-clear" type="button" data-owner-only>전체 삭제</button>
       </div>
 
-      <div class="paste-area hidden" id="paste-area">
+      <div class="paste-area hidden" id="paste-area" data-owner-only>
         <p class="hint">스프레드시트에서 헤더(<code>일련번호 / 카드명 / 등급 / 가치 / 보유 수량</code>)를 포함해 복사 후 붙여넣으세요.</p>
         <textarea id="paste-input" rows="8" placeholder="일련번호&#9;카드명&#9;등급&#9;가치&#9;보유 수량&#10;sv10-032&#9;우락고래ex&#9;RR&#9;2000&#9;1"></textarea>
         <div class="row-end">
@@ -132,7 +141,7 @@
               <th class="sortable num" data-sort="value">가치 <span class="sort-ind"></span></th>
               <th class="sortable num" data-sort="qty">보유 <span class="sort-ind"></span></th>
               <th class="sortable num" data-sort="total">합계 <span class="sort-ind"></span></th>
-              <th></th>
+              <th data-owner-only></th>
             </tr>
           </thead>
           <tbody id="inventory-body"></tbody>

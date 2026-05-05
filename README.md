@@ -3,9 +3,10 @@
 스프레드시트로 손수 관리하던 포켓몬 카드 재고를 단일 페이지에서 관리하는 웹앱입니다. 일련번호·카드명·등급·가치·보유 수량을 한 테이블에 통합해 빠르게 추가/수정/삭제하고, 총 가치를 실시간으로 확인합니다.
 
 - 빌드 단계 없음 (HTML / CSS / ES module JS만 사용)
-- Firebase Anonymous Auth로 자동 로그인 → 브라우저별 안전한 데이터 격리
+- **공개 읽기 / 관리자 쓰기**: 누구나 인벤토리 카드 목록을 볼 수 있고, 관리자(화이트리스트 이메일)만 추가/수정/삭제 가능
+- Google 로그인 (팝업) — 관리자만 편집 UI 활성화
 - Firestore 실시간 동기화 + 오프라인 지속 캐시(IndexedDB)
-- 기존 catalog/collection 데이터 또는 localStorage 데이터가 있으면 자동으로 단일 인벤토리로 마이그레이션됩니다
+- 기존 데이터(`/users/{uid}/data/inventory`, `catalog/collection`, localStorage)는 첫 관리자 로그인 시 자동으로 `/public/inventory`로 이전됩니다
 
 ## 주요 기능
 
@@ -32,14 +33,44 @@
 ## Firebase 설정 (필수)
 
 1. [Firebase 콘솔](https://console.firebase.google.com/) → `pokemon-1eacb` 프로젝트 선택.
-2. **Authentication → Sign-in method**에서 **Anonymous** 제공업체를 활성화합니다.
+2. **Authentication → Sign-in method**에서 **Google** 제공업체를 활성화합니다.
 3. **Firestore Database**를 **Native 모드**로 생성합니다 (지역은 가까운 곳, 예: `asia-northeast3`).
 4. **Firestore → Rules** 탭에 `firestore.rules`의 내용을 그대로 붙여넣고 **게시**합니다.
-5. **Project Settings → 일반 → 승인된 도메인**에 다음을 추가합니다.
+5. **Authentication → Settings → 승인된 도메인**에 다음을 추가합니다.
    - `localhost`
    - 배포된 Vercel 도메인 (예: `your-app.vercel.app`)
 
-> ⚠️ 익명 인증을 활성화하지 않으면 페이지 우측 상단 동기화 배지가 "오류"로 표시됩니다.
+### 관리자 이메일 등록 (중요)
+
+관리자만 인벤토리를 수정할 수 있도록, 다음 두 곳에 본인의 Google 이메일을 동일하게 추가하세요.
+
+1. **`firebase.js`**
+   ```js
+   export const OWNER_EMAILS = [
+     "your-email@gmail.com",
+   ];
+   ```
+2. **`firestore.rules`** 의 `isOwner()` 함수
+   ```
+   function isOwner() {
+     return request.auth != null
+       && request.auth.token.email_verified == true
+       && request.auth.token.email in [
+         'your-email@gmail.com',
+       ];
+   }
+   ```
+   변경 후 Firestore Rules 콘솔에서 다시 **게시(Publish)**.
+
+> 두 곳 중 하나라도 비어 있으면 동작이 어긋납니다. 클라이언트에서는 관리자처럼 보여도 서버에서 쓰기가 거부됩니다.
+
+### 동작 모드
+
+| 상태 | 보이는 화면 |
+|------|-------------|
+| 비로그인 방문자 | 카드 리스트(검색·필터·정렬·CSV 내보내기까지)만 표시 |
+| 로그인 + 화이트리스트 외 계정 | "읽기 전용" 배지, 편집 UI 숨김 |
+| 로그인 + 관리자 계정 | "관리자" 배지, 추가/수정/삭제/임포트 모두 활성화 |
 
 ## 로컬 실행
 
@@ -99,22 +130,23 @@ sv11W-092	바라철록	AR	5000	1
 Firestore 경로:
 
 ```
-/users/{uid}/data/inventory
-  -> { items: { [key]: { no, name, grade, value, qty } }, updatedAt }
+/public/inventory
+  -> { items: { [key]: { no, name, grade, value, qty } }, updatedAt, updatedBy }
 ```
 
 - `key`는 일련번호를 정규화한 값 (`SV10-032`, `sv10 032`, `sv10_032` → `sv10-032`).
 - 단일 문서로 관리되어 한 번의 읽기/쓰기로 전체 상태를 동기화합니다.
+- 누구나 읽을 수 있고, 관리자만 쓸 수 있습니다 (보안 규칙).
 
 ## 마이그레이션
 
-이전 버전(`catalog` + `collection` 분리 모델)을 사용했던 사용자는 처음 접속 시 자동으로 단일 인벤토리로 합쳐집니다.
+이전 버전 데이터는 처음 관리자 로그인 시 자동으로 `/public/inventory` 로 합쳐집니다.
 
-- 기존 `catalog` 항목은 가치·이름이 채워진 상태(수량 0)로 가져옵니다.
-- 기존 `collection` 항목은 동일 키 위에 수량을 덮어씁니다.
-- 양쪽 모두 정보가 비어 있는 항목(이름/가치/수량 없음)은 자동으로 정리됩니다.
+1. `/users/{uid}/data/inventory` (사용자별 인벤토리) → 그대로 복사
+2. `/users/{uid}/data/catalog` + `collection` (구버전) → 키 단위로 합쳐서 가져오기
+3. 위 둘 다 없으면 localStorage 의 `pokemon_catalog_v1` / `pokemon_collection_v1` 사용
 
 ## 주의
 
-- 익명 인증의 UID는 브라우저(IndexedDB)에 저장됩니다. 시크릿 모드, 데이터 삭제, 다른 기기에서는 다른 UID가 발급되어 데이터가 분리됩니다.
+- 관리자 계정이 추가/제거된 직후에는 브라우저를 새로고침하세요. 토큰이 갱신되어야 새 권한이 반영됩니다.
 - Firebase 웹 API 키는 공개되어도 안전합니다. 데이터 보호는 위의 보안 규칙으로 이루어집니다.

@@ -1,6 +1,7 @@
-import { auth, db } from "./firebase.js";
+import { auth, db, googleProvider, OWNER_EMAILS } from "./firebase.js";
 import {
-  signInAnonymously,
+  signInWithPopup,
+  signOut,
   onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import {
@@ -12,7 +13,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 
 // ---------- State ----------
-let userId = null;
+let currentUser = null;
 // items: key -> { no, name, grade, value, qty }
 let items = new Map();
 
@@ -30,7 +31,7 @@ let activeGrade = "";
 const GRADE_ORDER = ["RR", "SR", "SAR", "UR", "AR", "R", "U", "C"];
 const GRADE_RANK = Object.fromEntries(GRADE_ORDER.map((g, i) => [g, i]));
 
-const LEGACY_KEYS = {
+const LEGACY_LS_KEYS = {
   catalog: "pokemon_catalog_v1",
   collection: "pokemon_collection_v1",
 };
@@ -71,6 +72,10 @@ const els = {
   syncBadge: $("sync-badge"),
   syncText: document.querySelector("#sync-badge .sync-text"),
   toast: $("toast"),
+
+  authArea: $("auth-area"),
+  authBanner: $("auth-banner"),
+  bannerLogin: $("banner-login"),
 };
 
 // ---------- Helpers ----------
@@ -101,9 +106,13 @@ const escapeAttr = escapeHTML;
 function normalizeGrade(raw) {
   if (raw == null) return "";
   const s = String(raw).trim().toUpperCase();
-  if (!s) return "";
-  if (GRADE_RANK[s] != null) return s;
   return s;
+}
+
+function isOwner(user) {
+  if (!user || !user.email) return false;
+  if (!Array.isArray(OWNER_EMAILS) || OWNER_EMAILS.length === 0) return true;
+  return OWNER_EMAILS.includes(user.email);
 }
 
 function setSyncStatus(state, text) {
@@ -116,6 +125,7 @@ function setSyncStatus(state, text) {
       saving: "저장 중…",
       offline: "오프라인",
       error: "오류",
+      readonly: "읽기 전용",
     };
     els.syncText.textContent = map[state] || state;
   }
@@ -131,7 +141,7 @@ function showToast(message, type = "") {
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => {
     els.toast.classList.remove("show");
-  }, 2200);
+  }, 2400);
 }
 
 // ---------- CSV parsing ----------
@@ -174,6 +184,10 @@ function findColumnIndex(header, candidates) {
 }
 
 async function importFromText(text) {
+  if (!isOwner(currentUser)) {
+    showToast("관리자 로그인 후 이용 가능합니다.", "error");
+    return;
+  }
   const trimmed = text.trim();
   if (!trimmed) {
     showToast("붙여넣을 내용이 없습니다.", "error");
@@ -243,16 +257,16 @@ async function importFromText(text) {
 
 // ---------- Firestore I/O ----------
 function inventoryDocRef() {
-  if (!userId) return null;
-  return doc(db, "users", userId, "data", "inventory");
+  return doc(db, "public", "inventory");
 }
-function legacyCatalogRef() {
-  if (!userId) return null;
-  return doc(db, "users", userId, "data", "catalog");
+function legacyUserCatalogRef(uid) {
+  return doc(db, "users", uid, "data", "catalog");
 }
-function legacyCollectionRef() {
-  if (!userId) return null;
-  return doc(db, "users", userId, "data", "collection");
+function legacyUserCollectionRef(uid) {
+  return doc(db, "users", uid, "data", "collection");
+}
+function legacyUserInventoryRef(uid) {
+  return doc(db, "users", uid, "data", "inventory");
 }
 
 function mapToObject(map) {
@@ -262,13 +276,16 @@ function mapToObject(map) {
 }
 
 async function saveInventory() {
-  const ref = inventoryDocRef();
-  if (!ref) return;
+  if (!isOwner(currentUser)) {
+    showToast("관리자만 저장할 수 있습니다.", "error");
+    return;
+  }
   beginSaving();
   try {
-    await setDoc(ref, {
+    await setDoc(inventoryDocRef(), {
       items: mapToObject(items),
       updatedAt: serverTimestamp(),
+      updatedBy: currentUser?.email || null,
     });
   } catch (e) {
     console.error("saveInventory failed", e);
@@ -287,14 +304,24 @@ function endSaving() {
   if (pendingSaves === 0) {
     clearTimeout(savingTimer);
     savingTimer = setTimeout(() => {
-      if (pendingSaves === 0) {
-        setSyncStatus(navigator.onLine ? "synced" : "offline");
-      }
+      if (pendingSaves === 0) refreshSyncStatus();
     }, 250);
   }
 }
 
-function attachListeners(uid) {
+function refreshSyncStatus() {
+  if (!navigator.onLine) {
+    setSyncStatus("offline");
+    return;
+  }
+  if (!currentUser) {
+    setSyncStatus("readonly");
+    return;
+  }
+  setSyncStatus("synced");
+}
+
+function attachInventoryListener() {
   if (inventoryUnsub) inventoryUnsub();
 
   inventoryUnsub = onSnapshot(
@@ -305,11 +332,11 @@ function attachListeners(uid) {
       items = new Map(Object.entries(obj));
       renderAll();
       if (!snap.metadata.hasPendingWrites && pendingSaves === 0) {
-        setSyncStatus(navigator.onLine ? "synced" : "offline");
+        refreshSyncStatus();
       }
       if (!initialLoaded) {
         initialLoaded = true;
-        maybeMigrate();
+        if (isOwner(currentUser)) maybeMigrate();
       }
     },
     (err) => {
@@ -324,18 +351,41 @@ async function maybeMigrate() {
   if (migrationAttempted) return;
   migrationAttempted = true;
   if (items.size > 0) return;
+  if (!currentUser) return;
 
-  // 1) Migrate from legacy Firestore catalog+collection
+  const uid = currentUser.uid;
   try {
+    // 1) Migrate from legacy /users/{uid}/data/inventory
+    const personalSnap = await getDoc(legacyUserInventoryRef(uid));
+    if (personalSnap.exists()) {
+      const obj = (personalSnap.data() && personalSnap.data().items) || {};
+      const merged = new Map();
+      for (const [k, v] of Object.entries(obj)) {
+        merged.set(normalizeKey(k), {
+          no: v.no || k,
+          name: v.name || "",
+          grade: normalizeGrade(v.grade || ""),
+          value: parseInt0(v.value),
+          qty: parseInt0(v.qty),
+        });
+      }
+      if (merged.size > 0) {
+        items = merged;
+        await saveInventory();
+        showToast(`개인 인벤토리 ${merged.size}건을 공개 인벤토리로 옮겼습니다.`, "success");
+        return;
+      }
+    }
+
+    // 2) Migrate from legacy catalog + collection per-user docs
     const [catalogSnap, collectionSnap] = await Promise.all([
-      getDoc(legacyCatalogRef()),
-      getDoc(legacyCollectionRef()),
+      getDoc(legacyUserCatalogRef(uid)),
+      getDoc(legacyUserCollectionRef(uid)),
     ]);
     const catalog = (catalogSnap.exists() && catalogSnap.data().items) || null;
     const collectionItems = (collectionSnap.exists() && collectionSnap.data().items) || null;
     if (catalog || collectionItems) {
       const merged = new Map();
-      // Start with catalog (qty 0)
       if (catalog) {
         for (const [k, v] of Object.entries(catalog)) {
           merged.set(normalizeKey(k), {
@@ -347,7 +397,6 @@ async function maybeMigrate() {
           });
         }
       }
-      // Overlay collection (qty + price/name fallback)
       if (collectionItems) {
         for (const [k, v] of Object.entries(collectionItems)) {
           const key = normalizeKey(k);
@@ -361,14 +410,13 @@ async function maybeMigrate() {
           });
         }
       }
-      // Drop entries with qty 0 AND value 0 to avoid noise
       for (const [k, v] of merged) {
         if (!v.qty && !v.value && !v.name) merged.delete(k);
       }
       if (merged.size > 0) {
         items = merged;
         await saveInventory();
-        showToast(`기존 데이터 ${merged.size}건을 인벤토리로 옮겼습니다.`, "success");
+        showToast(`기존 데이터 ${merged.size}건을 옮겼습니다.`, "success");
         return;
       }
     }
@@ -376,10 +424,10 @@ async function maybeMigrate() {
     console.warn("legacy firestore migration skipped", e);
   }
 
-  // 2) Migrate from localStorage legacy data
+  // 3) localStorage legacy migration
   try {
-    const oldCatalog = localStorage.getItem(LEGACY_KEYS.catalog);
-    const oldCollection = localStorage.getItem(LEGACY_KEYS.collection);
+    const oldCatalog = localStorage.getItem(LEGACY_LS_KEYS.catalog);
+    const oldCollection = localStorage.getItem(LEGACY_LS_KEYS.collection);
     if (!oldCatalog && !oldCollection) return;
 
     const merged = new Map();
@@ -419,8 +467,8 @@ async function maybeMigrate() {
     if (merged.size > 0) {
       items = merged;
       await saveInventory();
-      localStorage.removeItem(LEGACY_KEYS.catalog);
-      localStorage.removeItem(LEGACY_KEYS.collection);
+      localStorage.removeItem(LEGACY_LS_KEYS.catalog);
+      localStorage.removeItem(LEGACY_LS_KEYS.collection);
       showToast(`이전 브라우저 데이터 ${merged.size}건을 가져왔습니다.`, "success");
     }
   } catch (e) {
@@ -430,9 +478,46 @@ async function maybeMigrate() {
 
 // ---------- Render ----------
 function renderAll() {
+  applyOwnerMode();
   renderStats();
   renderGradeFilter();
   renderInventory();
+}
+
+function applyOwnerMode() {
+  const owner = isOwner(currentUser);
+  document.body.classList.toggle("is-owner", owner);
+  document.body.classList.toggle("is-readonly", !owner);
+  if (els.authBanner) {
+    els.authBanner.hidden = !!currentUser;
+  }
+  renderAuthArea();
+}
+
+function renderAuthArea() {
+  const area = els.authArea;
+  if (!area) return;
+  if (currentUser) {
+    const owner = isOwner(currentUser);
+    const name = currentUser.displayName || currentUser.email || "사용자";
+    const email = currentUser.email || "";
+    area.innerHTML = `
+      <div class="user-chip">
+        <span class="role-badge ${owner ? "admin" : "guest"}">${owner ? "관리자" : "읽기 전용"}</span>
+        <span class="user-meta">
+          <span class="user-name">${escapeHTML(name)}</span>
+          ${email && email !== name ? `<span class="user-email">${escapeHTML(email)}</span>` : ""}
+        </span>
+        <button class="btn btn-light" id="logout-btn" type="button">로그아웃</button>
+      </div>
+    `;
+    const logoutBtn = document.getElementById("logout-btn");
+    if (logoutBtn) logoutBtn.addEventListener("click", handleLogout);
+  } else {
+    area.innerHTML = `<button class="btn btn-light" id="login-btn" type="button">관리자 로그인</button>`;
+    const loginBtn = document.getElementById("login-btn");
+    if (loginBtn) loginBtn.addEventListener("click", handleLogin);
+  }
 }
 
 function renderStats() {
@@ -497,7 +582,6 @@ function renderGradeFilter() {
       return ra - rb;
     });
 
-  // Preserve existing chips structure: "전체" + grades + (등급없음 if any blanks)
   container.innerHTML = "";
   const allBtn = document.createElement("button");
   allBtn.className = "chip" + (activeGrade === "" ? " active" : "");
@@ -545,6 +629,7 @@ function compareItems(a, b) {
 }
 
 function renderInventory() {
+  const owner = isOwner(currentUser);
   const tbody = els.inventoryBody;
   tbody.innerHTML = "";
   const q = String(els.inventorySearch.value || "").trim().toLowerCase();
@@ -573,34 +658,47 @@ function renderInventory() {
     const total = (r.qty || 0) * (r.value || 0);
     const tr = document.createElement("tr");
     tr.dataset.key = r.key;
-    tr.innerHTML = `
-      <td class="mono">${escapeHTML(r.no)}</td>
-      <td><span class="cell-edit" data-field="name" tabindex="0">${escapeHTML(r.name || "")}<span class="cell-empty">${r.name ? "" : "이름 없음"}</span></span></td>
-      <td>
-        <select class="grade-select ${gradeClass(r.grade)}" data-field="grade" aria-label="등급">
-          <option value="" ${!r.grade ? "selected" : ""}>—</option>
-          ${["RR","SR","SAR","UR","AR","R","U","C"].map(g => `<option value="${g}" ${r.grade===g?"selected":""}>${g}</option>`).join("")}
-          ${r.grade && !GRADE_ORDER.includes(r.grade) ? `<option value="${escapeAttr(r.grade)}" selected>${escapeHTML(r.grade)}</option>` : ""}
-        </select>
-      </td>
-      <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가치" /></td>
-      <td class="num">
-        <div class="qty-cell">
-          <button class="icon-btn" data-act="dec" title="−1">−</button>
-          <input type="number" class="qty-input" data-field="qty" min="0" step="1" value="${r.qty || 0}" aria-label="보유 수량" />
-          <button class="icon-btn" data-act="inc" title="+1">+</button>
-        </div>
-      </td>
-      <td class="num total-cell">${formatWon(total)}</td>
-      <td><button class="icon-btn danger" data-act="remove" title="삭제">×</button></td>
-    `;
+    if (owner) {
+      tr.innerHTML = `
+        <td class="mono">${escapeHTML(r.no)}</td>
+        <td><span class="cell-edit" data-field="name" tabindex="0">${escapeHTML(r.name || "")}<span class="cell-empty">${r.name ? "" : "이름 없음"}</span></span></td>
+        <td>
+          <select class="grade-select ${gradeClass(r.grade)}" data-field="grade" aria-label="등급">
+            <option value="" ${!r.grade ? "selected" : ""}>—</option>
+            ${["RR","SR","SAR","UR","AR","R","U","C"].map(g => `<option value="${g}" ${r.grade===g?"selected":""}>${g}</option>`).join("")}
+            ${r.grade && !GRADE_ORDER.includes(r.grade) ? `<option value="${escapeAttr(r.grade)}" selected>${escapeHTML(r.grade)}</option>` : ""}
+          </select>
+        </td>
+        <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가치" /></td>
+        <td class="num">
+          <div class="qty-cell">
+            <button class="icon-btn" data-act="dec" title="−1">−</button>
+            <input type="number" class="qty-input" data-field="qty" min="0" step="1" value="${r.qty || 0}" aria-label="보유 수량" />
+            <button class="icon-btn" data-act="inc" title="+1">+</button>
+          </div>
+        </td>
+        <td class="num total-cell">${formatWon(total)}</td>
+        <td><button class="icon-btn danger" data-act="remove" title="삭제">×</button></td>
+      `;
+    } else {
+      tr.innerHTML = `
+        <td class="mono">${escapeHTML(r.no)}</td>
+        <td>${escapeHTML(r.name || "") || '<span class="cell-empty">이름 없음</span>'}</td>
+        <td>${r.grade ? `<span class="grade-badge ${gradeClass(r.grade)}">${escapeHTML(r.grade)}</span>` : '<span class="grade-badge g-none">—</span>'}</td>
+        <td class="num">${formatWon(r.value || 0)}</td>
+        <td class="num">${(r.qty || 0).toLocaleString("ko-KR")}</td>
+        <td class="num total-cell">${formatWon(total)}</td>
+      `;
+    }
     tbody.appendChild(tr);
   }
 
   els.inventoryCount.textContent = `${filtered.length.toLocaleString("ko-KR")} / ${items.size.toLocaleString("ko-KR")}건`;
 
   if (items.size === 0) {
-    els.inventoryEmpty.textContent = "아직 등록된 카드가 없습니다.";
+    els.inventoryEmpty.textContent = owner
+      ? "아직 등록된 카드가 없습니다. 위에서 카드를 추가하세요."
+      : "등록된 카드가 없습니다.";
     els.inventoryEmpty.classList.remove("hidden");
   } else if (filtered.length === 0) {
     els.inventoryEmpty.textContent = "조건에 맞는 카드가 없습니다.";
@@ -609,7 +707,6 @@ function renderInventory() {
     els.inventoryEmpty.classList.add("hidden");
   }
 
-  // Update sort indicators
   const ths = els.inventoryTable.querySelectorAll("th.sortable");
   ths.forEach((th) => {
     th.classList.remove("sort-asc", "sort-desc");
@@ -621,6 +718,10 @@ function renderInventory() {
 
 // ---------- Mutations ----------
 async function upsertCard({ no, name, grade, value, qty }, mode = "merge") {
+  if (!isOwner(currentUser)) {
+    showToast("관리자 로그인이 필요합니다.", "error");
+    return { ok: false, msg: "권한 없음" };
+  }
   const trimmedNo = String(no || "").trim();
   const key = normalizeKey(trimmedNo);
   if (!key) return { ok: false, msg: "일련번호를 입력하세요." };
@@ -649,6 +750,7 @@ async function upsertCard({ no, name, grade, value, qty }, mode = "merge") {
 }
 
 async function updateField(key, field, raw) {
+  if (!isOwner(currentUser)) return;
   const k = normalizeKey(key);
   const entry = items.get(k);
   if (!entry) return;
@@ -672,6 +774,7 @@ async function updateField(key, field, raw) {
 }
 
 async function adjustQty(key, delta) {
+  if (!isOwner(currentUser)) return;
   const k = normalizeKey(key);
   const entry = items.get(k);
   if (!entry) return;
@@ -683,9 +786,33 @@ async function adjustQty(key, delta) {
 }
 
 async function removeCard(key) {
+  if (!isOwner(currentUser)) return;
   items.delete(normalizeKey(key));
   renderAll();
   await saveInventory();
+}
+
+// ---------- Auth handlers ----------
+async function handleLogin() {
+  try {
+    setSyncStatus("connecting", "로그인 중…");
+    await signInWithPopup(auth, googleProvider);
+  } catch (err) {
+    console.error("login failed", err);
+    refreshSyncStatus();
+    if (err && err.code === "auth/popup-closed-by-user") return;
+    showToast("로그인 실패: " + (err.message || err), "error");
+  }
+}
+
+async function handleLogout() {
+  try {
+    await signOut(auth);
+    showToast("로그아웃되었습니다.", "success");
+  } catch (err) {
+    console.error("logout failed", err);
+    showToast("로그아웃 실패: " + (err.message || err), "error");
+  }
 }
 
 // ---------- Suggestions ----------
@@ -815,8 +942,6 @@ els.addForm.addEventListener("submit", async (e) => {
     els.cardPreview.textContent = "";
     els.cardPreview.classList.remove("found", "error");
     els.cardNo.focus();
-  } else {
-    showToast(result.msg, "error");
   }
 });
 
@@ -844,7 +969,6 @@ els.cardNo.addEventListener("keydown", (e) => {
       const no = list[suggestionIndex].dataset.no;
       els.cardNo.value = no;
       els.suggestions.classList.add("hidden");
-      // Pre-fill from existing
       const existing = items.get(normalizeKey(no));
       if (existing) {
         els.cardName.value = existing.name || "";
@@ -876,8 +1000,8 @@ els.suggestions.addEventListener("mousedown", (e) => {
   els.cardQty.focus();
 });
 
-// Inventory table interactions
 els.inventoryBody.addEventListener("click", async (e) => {
+  if (!isOwner(currentUser)) return;
   const tr = e.target.closest("tr[data-key]");
   if (!tr) return;
   const key = tr.dataset.key;
@@ -891,7 +1015,6 @@ els.inventoryBody.addEventListener("click", async (e) => {
     }
     return;
   }
-  // Inline name edit on click
   const editEl = e.target.closest(".cell-edit");
   if (editEl && !editEl.isContentEditable) {
     startInlineEdit(editEl, tr, "name");
@@ -899,6 +1022,7 @@ els.inventoryBody.addEventListener("click", async (e) => {
 });
 
 els.inventoryBody.addEventListener("keydown", (e) => {
+  if (!isOwner(currentUser)) return;
   const editEl = e.target.closest(".cell-edit");
   if (editEl && (e.key === "Enter" || e.key === " ")) {
     e.preventDefault();
@@ -914,7 +1038,6 @@ function startInlineEdit(span, tr, field) {
   span.contentEditable = "true";
   span.classList.add("editing");
   span.textContent = current;
-  // Place cursor at end
   const range = document.createRange();
   range.selectNodeContents(span);
   range.collapse(false);
@@ -945,6 +1068,7 @@ function startInlineEdit(span, tr, field) {
 }
 
 els.inventoryBody.addEventListener("change", async (e) => {
+  if (!isOwner(currentUser)) return;
   const tr = e.target.closest("tr[data-key]");
   if (!tr) return;
   const key = tr.dataset.key;
@@ -958,7 +1082,6 @@ els.inventoryBody.addEventListener("change", async (e) => {
   }
 });
 
-// Sort
 els.inventoryTable.querySelectorAll("th.sortable").forEach((th) => {
   th.addEventListener("click", () => {
     const k = th.dataset.sort;
@@ -968,7 +1091,6 @@ els.inventoryTable.querySelectorAll("th.sortable").forEach((th) => {
   });
 });
 
-// Grade filter
 els.gradeFilter.addEventListener("click", (e) => {
   const chip = e.target.closest(".chip");
   if (!chip) return;
@@ -979,6 +1101,7 @@ els.gradeFilter.addEventListener("click", (e) => {
 els.inventorySearch.addEventListener("input", renderInventory);
 els.exportBtn.addEventListener("click", exportCSV);
 els.inventoryClear.addEventListener("click", async () => {
+  if (!isOwner(currentUser)) return;
   if (items.size === 0) return;
   if (!confirm(`전체 인벤토리(${items.size}건)를 삭제할까요? 되돌릴 수 없습니다.`)) return;
   items = new Map();
@@ -986,30 +1109,31 @@ els.inventoryClear.addEventListener("click", async () => {
   await saveInventory();
 });
 
-window.addEventListener("online", () => {
-  if (pendingSaves === 0) setSyncStatus("synced");
-});
+if (els.bannerLogin) {
+  els.bannerLogin.addEventListener("click", handleLogin);
+}
+
+window.addEventListener("online", refreshSyncStatus);
 window.addEventListener("offline", () => setSyncStatus("offline"));
 
 // ---------- Auth bootstrap ----------
 setSyncStatus("connecting");
+renderAuthArea();
+applyOwnerMode();
+
 onAuthStateChanged(auth, (user) => {
-  if (user) {
-    userId = user.uid;
-    setSyncStatus(navigator.onLine ? "synced" : "offline");
-    attachListeners(user.uid);
-  } else {
-    setSyncStatus("connecting", "로그인 중…");
-    signInAnonymously(auth).catch((err) => {
-      console.error("anonymous sign-in failed", err);
-      setSyncStatus("error", "로그인 실패");
-      showToast(
-        "Firebase 인증에 실패했습니다. 콘솔에서 익명 로그인을 활성화했는지 확인하세요.",
-        "error",
-      );
-    });
+  currentUser = user || null;
+  applyOwnerMode();
+  refreshSyncStatus();
+  // Re-attach listener (rules differ for authenticated vs anonymous reads,
+  // and we want to re-trigger migration on first owner login).
+  attachInventoryListener();
+  if (user && isOwner(user) && initialLoaded && items.size === 0) {
+    migrationAttempted = false;
+    maybeMigrate();
   }
 });
 
-// Initial empty render
+// Initial public read attempt even before auth state resolves.
+attachInventoryListener();
 renderAll();
