@@ -25,7 +25,7 @@ const firebaseConfig = {
 // 관리자 이메일 목록. 여기에 추가된 Google 계정만 인벤토리를 편집할 수 있습니다.
 // firestore.rules 파일에도 같은 이메일을 추가해 서버 측 권한도 함께 제한하세요.
 // 비어 있으면 로그인한 모든 사용자가 관리자로 취급됩니다 (개발용).
-export const OWNER_EMAILS = [];
+export const OWNER_EMAILS = ["jaehee05@kakao.com"];
 
 export const app = initializeApp(firebaseConfig);
 
