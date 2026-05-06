@@ -1450,10 +1450,60 @@ function extractSerial(text) {
   return null;
 }
 
+async function cropForOCR(file) {
+  // 카드 좌하단 (확장팩 코드 + 카드번호가 있는 영역) 만 잘라서
+  // OCR 노이즈를 줄이고 정확도를 끌어올림.
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("파일 읽기 실패"));
+    reader.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error("이미지 로드 실패"));
+    im.src = dataUrl;
+  });
+  // 좌측 60%, 하단 25% 영역
+  const cropX = 0;
+  const cropY = Math.floor(img.height * 0.74);
+  const cropW = Math.floor(img.width * 0.6);
+  const cropH = img.height - cropY;
+  // OCR 정확도용 업스케일 (작은 텍스트 인식)
+  const minOutWidth = 900;
+  const scale = Math.max(1, minOutWidth / cropW);
+  const outW = Math.round(cropW * scale);
+  const outH = Math.round(cropH * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("이미지 변환 실패"))),
+      "image/png",
+    );
+  });
+}
+
 async function runOCR(file) {
   const T = await loadTesseract();
   showToast("일련번호 인식 중…");
-  const result = await T.recognize(file, "eng", { logger: () => {} });
+  let target = file;
+  try {
+    target = await cropForOCR(file);
+  } catch (e) {
+    console.warn("OCR crop failed, using original", e);
+    target = file;
+  }
+  const result = await T.recognize(target, "eng", {
+    tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/-",
+    logger: () => {},
+  });
   const text = result?.data?.text || "";
   return { text, serial: extractSerial(text) };
 }
