@@ -258,12 +258,12 @@
           </div>
         </div>
         <div class="discount-field">
-          <label for="discount-start">시작 일시 <small>(비우면 즉시 시작)</small></label>
-          <input type="datetime-local" id="discount-start" />
+          <label for="discount-start">시작 날짜 <small>(해당 날짜 00시부터 적용)</small></label>
+          <input type="date" id="discount-start" />
         </div>
         <div class="discount-field">
-          <label for="discount-end">종료 일시 <small>(비우면 무기한)</small></label>
-          <input type="datetime-local" id="discount-end" />
+          <label for="discount-end">종료 날짜 <small>(해당 날짜 00시에 만료)</small></label>
+          <input type="date" id="discount-end" />
         </div>
         <div class="discount-modal-actions">
           <button type="button" class="btn btn-danger" id="discount-remove">할인 제거</button>

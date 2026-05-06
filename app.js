@@ -265,14 +265,17 @@ function timeUntilLabel(iso) {
   return `${minutes}분 남음`;
 }
 function isoToLocalInput(iso) {
+  // 날짜만 표시 (YYYY-MM-DD), 로컬 타임존 기준 자정으로 보고 날짜 추출
   const d = parseISO(iso);
   if (!d) return "";
   const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 function localInputToISO(local) {
   if (!local) return null;
-  const d = new Date(local);
+  // "YYYY-MM-DD" → 로컬 자정으로 해석 (브라우저 기본은 UTC 자정이라 명시 필요)
+  const dateStr = /^\d{4}-\d{2}-\d{2}$/.test(local) ? local + "T00:00:00" : local;
+  const d = new Date(dateStr);
   if (isNaN(d.getTime())) return null;
   return d.toISOString();
 }
