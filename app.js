@@ -1,31 +1,49 @@
-import { auth, db } from "./firebase.js";
+import { auth, db, storage, googleProvider, OWNER_EMAILS } from "./firebase.js";
 import {
-  signInAnonymously,
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  signOut,
   onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import {
   doc,
+  getDoc,
   setDoc,
   onSnapshot,
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+import {
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject,
+} from "https://www.gstatic.com/firebasejs/11.0.2/firebase-storage.js";
 
 // ---------- State ----------
-let userId = null;
-let catalog = new Map();    // key -> { no, name, price }
-let collection = new Map(); // key -> { no, name, price, qty }
+let currentUser = null;
+// items: key -> { no, name, grade, value, qty }
+let items = new Map();
+// sets: prefix -> name (예: "sv10" -> "로켓단의 영광")
+let sets = new Map();
 
-let catalogUnsub = null;
-let collectionUnsub = null;
-
-let initialCatalogLoaded = false;
-let initialCollectionLoaded = false;
+let inventoryUnsub = null;
+let setsUnsub = null;
+let initialLoaded = false;
 let migrationAttempted = false;
+let stateMigrationAttempted = false;
 
 let pendingSaves = 0;
 let savingTimer = null;
 
-const LEGACY_KEYS = {
+let sortKey = "value";
+let sortDir = -1; // 1 asc, -1 desc
+let activeState = ""; // "" = 전체, "__none__" = 미평가, "10".."0" = 정확한 점수
+
+const GRADE_ORDER = ["RR", "SR", "SAR", "UR", "AR", "R", "U", "C"];
+const GRADE_RANK = Object.fromEntries(GRADE_ORDER.map((g, i) => [g, i]));
+
+const LEGACY_LS_KEYS = {
   catalog: "pokemon_catalog_v1",
   collection: "pokemon_collection_v1",
 };
@@ -38,44 +56,110 @@ const els = {
   pasteArea: $("paste-area"),
   pasteInput: $("paste-input"),
   pasteApply: $("paste-apply"),
-  sampleLoad: $("sample-load"),
-  dataClear: $("data-clear"),
-  dataStatus: $("data-status"),
+  pasteCancel: $("paste-cancel"),
 
   addForm: $("add-form"),
-  cardInput: $("card-input"),
-  qtyInput: $("qty-input"),
+  cardNo: $("card-no"),
+  cardName: $("card-name"),
+  cardGrade: $("card-grade"),
+  cardState: $("card-state"),
+  cardValue: $("card-value"),
+  cardQty: $("card-qty"),
   cardPreview: $("card-preview"),
   suggestions: $("suggestions"),
 
-  collectionBody: $("collection-body"),
-  collectionEmpty: $("collection-empty"),
-  collectionSearch: $("collection-search"),
-  collectionClear: $("collection-clear"),
+  inventoryBody: $("inventory-body"),
+  inventoryEmpty: $("inventory-empty"),
+  inventorySearch: $("inventory-search"),
+  inventoryClear: $("inventory-clear"),
+  imagesClearBtn: $("images-clear-btn"),
+  inventoryCount: $("inventory-count"),
+  inventoryTable: $("inventory-table"),
+  cardGrid: $("card-grid"),
+  sortSelect: $("sort-select"),
   exportBtn: $("export-btn"),
-  totalsCount: $("totals-count"),
-  totalsSum: $("totals-sum"),
 
-  catalogBody: $("catalog-body"),
-  catalogSearch: $("catalog-search"),
-  catalogCount: $("catalog-count"),
+  gradeFilter: $("grade-filter"),
+  statTypes: $("stat-types"),
+  statQty: $("stat-qty"),
+  statValue: $("stat-value"),
+  statGrades: $("stat-grades"),
 
   syncBadge: $("sync-badge"),
   syncText: document.querySelector("#sync-badge .sync-text"),
-
   toast: $("toast"),
+
+  authArea: $("auth-area"),
+
+  imageInput: $("image-input"),
+  lightbox: $("lightbox"),
+  lightboxImg: $("lightbox-img"),
+  lightboxClose: $("lightbox-close"),
+  lightboxBackdrop: $("lightbox-backdrop"),
+
+  cartFab: $("cart-fab"),
+  cartFabCount: $("cart-fab-count"),
+  cartDrawer: $("cart-drawer"),
+  cartDrawerBody: $("cart-drawer-body"),
+  cartDrawerClose: $("cart-drawer-close"),
+  cartBackdrop: $("cart-backdrop"),
+  cartTotalQty: $("cart-total-qty"),
+  cartTotalValue: $("cart-total-value"),
+  cartClear: $("cart-clear"),
+  cartSubmit: $("cart-submit"),
+  codeModal: $("code-modal"),
+  codeModalBackdrop: $("code-modal-backdrop"),
+  codeDisplay: $("code-display"),
+  codeModalMeta: $("code-modal-meta"),
+  codeCopy: $("code-copy"),
+  codeClose: $("code-close"),
+  requestForm: $("request-form"),
+  requestCodeInput: $("request-code-input"),
+  requestResult: $("request-result"),
+
+  setsForm: $("sets-form"),
+  setPrefix: $("set-prefix"),
+  setName: $("set-name"),
+  setsList: $("sets-list"),
+
+  discountModal: $("discount-modal"),
+  discountModalBackdrop: $("discount-modal-backdrop"),
+  discountModalCard: $("discount-modal-card"),
+  discountForm: $("discount-form"),
+  discountPercent: $("discount-percent"),
+  discountFinal: $("discount-final"),
+  discountStart: $("discount-start"),
+  discountEnd: $("discount-end"),
+  discountRemove: $("discount-remove"),
+  discountCancel: $("discount-cancel"),
+
+  imageFormatOn: $("image-format-on"),
 };
+
+let currentUploadKey = null;
+let currentDiscountKey = null;
+let currentDiscountOriginal = 0;
+let discountSyncing = false;
+let imageAutoFormat = (() => {
+  try { return localStorage.getItem("pokemon_image_auto_format") !== "0"; }
+  catch (e) { return true; }
+})();
+let cart = {};
+try {
+  cart = JSON.parse(localStorage.getItem("pokemon_cart_v1") || "{}") || {};
+} catch (e) { cart = {}; }
+let lastRequest = null; // { code, data }
 
 // ---------- Helpers ----------
 function normalizeKey(s) {
   if (s == null) return "";
-  return String(s).trim().toLowerCase().replace(/\s+/g, " ");
+  return String(s).trim().toLowerCase().replace(/[\s\-_]+/g, "-");
 }
-function formatPrice(n) {
+function formatWon(n) {
   const v = Number(n) || 0;
-  return v.toLocaleString("ko-KR") + "원";
+  return "₩" + v.toLocaleString("ko-KR");
 }
-function parsePrice(raw) {
+function parseInt0(raw) {
   if (raw == null) return 0;
   const s = String(raw).replace(/[^\d.-]/g, "");
   const n = parseFloat(s);
@@ -91,6 +175,124 @@ function escapeHTML(s) {
 }
 const escapeAttr = escapeHTML;
 
+function normalizeGrade(raw) {
+  if (raw == null) return "";
+  const s = String(raw).trim().toUpperCase();
+  return s;
+}
+
+function numericToLetter(n) {
+  if (!Number.isFinite(n)) return null;
+  if (n >= 9) return "S";
+  if (n >= 6) return "A";
+  if (n >= 1) return "B";
+  return null;
+}
+function normalizeState(raw) {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "string") {
+    const s = raw.trim().toUpperCase();
+    if (s === "S" || s === "A" || s === "B") return s;
+    const n = parseFloat(s);
+    if (Number.isFinite(n)) return numericToLetter(n);
+    return null;
+  }
+  if (typeof raw === "number") return numericToLetter(raw);
+  return null;
+}
+
+const STATE_RANK = { S: 3, A: 2, B: 1 };
+function stateRank(s) {
+  return STATE_RANK[String(s || "").toUpperCase()] || 0;
+}
+
+function stateClass(s) {
+  if (s == null) return "st-none";
+  const u = String(s).toUpperCase();
+  if (u === "S") return "st-s";
+  if (u === "A") return "st-a";
+  if (u === "B") return "st-b";
+  return "st-none";
+}
+
+function stateLabel(s) {
+  return s == null ? "—" : String(s);
+}
+
+// ---------- Discount helpers ----------
+function parseISO(s) {
+  if (!s) return null;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function isDiscountActive(d, now = new Date()) {
+  if (!d || !d.percent || d.percent <= 0) return false;
+  const start = parseISO(d.startsAt);
+  const end = parseISO(d.endsAt);
+  if (start && start > now) return false;
+  if (end && end < now) return false;
+  return true;
+}
+function isDiscountScheduled(d, now = new Date()) {
+  if (!d || !d.percent) return false;
+  const start = parseISO(d.startsAt);
+  return !!(start && start > now);
+}
+function isDiscountExpired(d, now = new Date()) {
+  if (!d || !d.percent) return false;
+  const end = parseISO(d.endsAt);
+  return !!(end && end < now);
+}
+function getEffectivePrice(item) {
+  const v = parseInt0(item && item.value);
+  if (!item || !isDiscountActive(item.discount)) return v;
+  // 할인 후 금액이 직접 지정되어 있으면 그 값을 그대로 사용 (퍼센트 반올림 오차 방지)
+  if (item.discount.finalPrice != null && Number.isFinite(Number(item.discount.finalPrice))) {
+    return Math.max(0, parseInt0(item.discount.finalPrice));
+  }
+  const p = item.discount.percent || 0;
+  return Math.max(0, Math.round((v * (100 - p)) / 100));
+}
+function timeUntilLabel(iso) {
+  const target = parseISO(iso);
+  if (!target) return "";
+  const ms = target.getTime() - Date.now();
+  if (ms <= 0) return "만료";
+  const days = Math.floor(ms / 86400000);
+  if (days >= 1) {
+    const hours = Math.floor((ms % 86400000) / 3600000);
+    return hours > 0 ? `${days}일 ${hours}시간 남음` : `${days}일 남음`;
+  }
+  const hours = Math.floor(ms / 3600000);
+  if (hours >= 1) {
+    const minutes = Math.floor((ms % 3600000) / 60000);
+    return minutes > 0 ? `${hours}시간 ${minutes}분 남음` : `${hours}시간 남음`;
+  }
+  const minutes = Math.max(1, Math.floor(ms / 60000));
+  return `${minutes}분 남음`;
+}
+function isoToLocalInput(iso) {
+  // 날짜만 표시 (YYYY-MM-DD), 로컬 타임존 기준 자정으로 보고 날짜 추출
+  const d = parseISO(iso);
+  if (!d) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function localInputToISO(local) {
+  if (!local) return null;
+  // "YYYY-MM-DD" → 로컬 자정으로 해석 (브라우저 기본은 UTC 자정이라 명시 필요)
+  const dateStr = /^\d{4}-\d{2}-\d{2}$/.test(local) ? local + "T00:00:00" : local;
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function isOwner(user) {
+  if (!user || !user.email) return false;
+  if (!Array.isArray(OWNER_EMAILS) || OWNER_EMAILS.length === 0) return true;
+  return OWNER_EMAILS.includes(user.email);
+}
+
 function setSyncStatus(state, text) {
   els.syncBadge.dataset.state = state;
   if (text) els.syncText.textContent = text;
@@ -101,6 +303,7 @@ function setSyncStatus(state, text) {
       saving: "저장 중…",
       offline: "오프라인",
       error: "오류",
+      readonly: "읽기 전용",
     };
     els.syncText.textContent = map[state] || state;
   }
@@ -116,7 +319,7 @@ function showToast(message, type = "") {
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => {
     els.toast.classList.remove("show");
-  }, 2200);
+  }, 2400);
 }
 
 // ---------- CSV parsing ----------
@@ -150,7 +353,7 @@ function parseCSV(text, delimiter) {
   return rows.filter((r) => r.some((v) => String(v).trim() !== ""));
 }
 function findColumnIndex(header, candidates) {
-  const norm = header.map((h) => normalizeKey(h));
+  const norm = header.map((h) => String(h).trim().toLowerCase());
   for (const cand of candidates) {
     const idx = norm.findIndex((h) => h.includes(cand));
     if (idx !== -1) return idx;
@@ -158,7 +361,11 @@ function findColumnIndex(header, candidates) {
   return -1;
 }
 
-async function importCatalogFromText(text) {
+async function importFromText(text) {
+  if (!isOwner(currentUser)) {
+    showToast("관리자 로그인 후 이용 가능합니다.", "error");
+    return;
+  }
   const trimmed = text.trim();
   if (!trimmed) {
     showToast("붙여넣을 내용이 없습니다.", "error");
@@ -171,54 +378,78 @@ async function importCatalogFromText(text) {
     return;
   }
 
-  let header = rows[0].map((h) => normalizeKey(h));
+  let header = rows[0];
   let dataRows = rows.slice(1);
   const looksLikeHeader = header.some((h) =>
-    /번호|이름|가격|순번|name|price|no\.?$|number/i.test(h),
+    /일련번호|번호|카드|등급|상태|가치|가격|수량|보유|name|grade|state|condition|value|price|qty/i.test(String(h)),
   );
   if (!looksLikeHeader) {
-    header = ["순번", "번호", "카드 이름", "가격"];
+    header = ["일련번호", "카드명", "등급", "상태", "가치", "보유 수량"];
     dataRows = rows;
   }
 
-  const noIdx = findColumnIndex(header, ["번호", "no", "number", "code"]);
-  const nameIdx = findColumnIndex(header, ["이름", "name", "카드"]);
-  const priceIdx = findColumnIndex(header, ["가격", "price", "원"]);
+  const noIdx = findColumnIndex(header, ["일련번호", "번호", "no", "number", "code"]);
+  const nameIdx = findColumnIndex(header, ["카드명", "이름", "name", "카드"]);
+  const gradeIdx = findColumnIndex(header, ["등급", "grade", "rarity"]);
+  const stateIdx = findColumnIndex(header, ["상태", "state", "condition"]);
+  const valueIdx = findColumnIndex(header, ["가치", "가격", "value", "price", "원"]);
+  const qtyIdx = findColumnIndex(header, ["보유", "수량", "qty", "quantity"]);
 
-  if (noIdx === -1 || priceIdx === -1) {
-    showToast("번호/가격 열을 찾을 수 없습니다. 헤더를 확인해주세요.", "error");
+  if (noIdx === -1) {
+    showToast("일련번호 열을 찾을 수 없습니다.", "error");
     return;
   }
 
-  const next = new Map();
+  const next = new Map(items);
+  let added = 0;
+  let updated = 0;
   for (const r of dataRows) {
     const no = (r[noIdx] || "").trim();
     if (!no) continue;
-    if (normalizeKey(no) === "번호") continue;
+    const key = normalizeKey(no);
+    if (!key) continue;
     const name = nameIdx >= 0 ? (r[nameIdx] || "").trim() : "";
-    const price = parsePrice(r[priceIdx]);
-    next.set(normalizeKey(no), { no, name, price });
+    const grade = gradeIdx >= 0 ? normalizeGrade(r[gradeIdx]) : "";
+    const stateRaw = stateIdx >= 0 ? r[stateIdx] : "";
+    const state = stateIdx >= 0 ? normalizeState(stateRaw) : null;
+    const value = valueIdx >= 0 ? parseInt0(r[valueIdx]) : 0;
+    const qty = qtyIdx >= 0 ? Math.max(0, parseInt0(r[qtyIdx])) : 1;
+
+    const existing = next.get(key);
+    if (existing) updated++;
+    else added++;
+    next.set(key, {
+      ...(existing || {}),
+      no: no,
+      name: name || (existing && existing.name) || "",
+      grade: grade || (existing && existing.grade) || "",
+      state: state != null ? state : (existing ? existing.state : null),
+      value: value || (existing && existing.value) || 0,
+      qty: qty,
+    });
   }
-  if (next.size === 0) {
+  if (added + updated === 0) {
     showToast("유효한 데이터 행이 없습니다.", "error");
     return;
   }
-  catalog = next;
-  await saveCatalog();
-  renderCatalog();
-  updateDataStatus();
-  renderCollection();
-  showToast(`${next.size.toLocaleString("ko-KR")}건의 가격 데이터를 등록했습니다.`, "success");
+  items = next;
+  await saveInventory();
+  renderAll();
+  showToast(`가져오기 완료: 신규 ${added}건, 업데이트 ${updated}건`, "success");
 }
 
 // ---------- Firestore I/O ----------
-function catalogDocRef() {
-  if (!userId) return null;
-  return doc(db, "users", userId, "data", "catalog");
+function inventoryDocRef() {
+  return doc(db, "public", "inventory");
 }
-function collectionDocRef() {
-  if (!userId) return null;
-  return doc(db, "users", userId, "data", "collection");
+function legacyUserCatalogRef(uid) {
+  return doc(db, "users", uid, "data", "catalog");
+}
+function legacyUserCollectionRef(uid) {
+  return doc(db, "users", uid, "data", "collection");
+}
+function legacyUserInventoryRef(uid) {
+  return doc(db, "users", uid, "data", "inventory");
 }
 
 function mapToObject(map) {
@@ -227,35 +458,21 @@ function mapToObject(map) {
   return out;
 }
 
-async function saveCatalog() {
-  const ref = catalogDocRef();
-  if (!ref) return;
-  beginSaving();
-  try {
-    await setDoc(ref, {
-      items: mapToObject(catalog),
-      updatedAt: serverTimestamp(),
-    });
-  } catch (e) {
-    console.error("saveCatalog failed", e);
-    showToast("가격 데이터 저장 실패: " + (e.message || e), "error");
-  } finally {
-    endSaving();
+async function saveInventory() {
+  if (!isOwner(currentUser)) {
+    showToast("관리자만 저장할 수 있습니다.", "error");
+    return;
   }
-}
-
-async function saveCollection() {
-  const ref = collectionDocRef();
-  if (!ref) return;
   beginSaving();
   try {
-    await setDoc(ref, {
-      items: mapToObject(collection),
+    await setDoc(inventoryDocRef(), {
+      items: mapToObject(items),
       updatedAt: serverTimestamp(),
+      updatedBy: currentUser?.email || null,
     });
   } catch (e) {
-    console.error("saveCollection failed", e);
-    showToast("보유 목록 저장 실패: " + (e.message || e), "error");
+    console.error("saveInventory failed", e);
+    showToast("저장 실패: " + (e.message || e), "error");
   } finally {
     endSaving();
   }
@@ -270,265 +487,1470 @@ function endSaving() {
   if (pendingSaves === 0) {
     clearTimeout(savingTimer);
     savingTimer = setTimeout(() => {
-      if (pendingSaves === 0) {
-        setSyncStatus(navigator.onLine ? "synced" : "offline");
-      }
+      if (pendingSaves === 0) refreshSyncStatus();
     }, 250);
   }
 }
 
-function attachListeners(uid) {
-  if (catalogUnsub) catalogUnsub();
-  if (collectionUnsub) collectionUnsub();
+function refreshSyncStatus() {
+  if (!navigator.onLine) {
+    setSyncStatus("offline");
+    return;
+  }
+  if (!currentUser) {
+    setSyncStatus("readonly");
+    return;
+  }
+  setSyncStatus("synced");
+}
 
-  catalogUnsub = onSnapshot(
-    catalogDocRef(),
+async function migrateNumericStates() {
+  if (stateMigrationAttempted) return;
+  if (!isOwner(currentUser)) return;
+  let changed = false;
+  for (const [k, v] of items) {
+    if (typeof v.state === "number") {
+      const letter = numericToLetter(v.state);
+      items.set(k, { ...v, state: letter });
+      changed = true;
+    }
+  }
+  if (changed) {
+    stateMigrationAttempted = true;
+    await saveInventory();
+  } else {
+    stateMigrationAttempted = true;
+  }
+}
+
+function attachInventoryListener() {
+  if (inventoryUnsub) inventoryUnsub();
+
+  inventoryUnsub = onSnapshot(
+    inventoryDocRef(),
     (snap) => {
       const data = snap.exists() ? snap.data() : null;
-      const items = (data && data.items) || {};
-      catalog = new Map(Object.entries(items));
-      updateDataStatus();
-      renderCatalog();
-      renderCollection();
-      if (!initialCatalogLoaded) {
-        initialCatalogLoaded = true;
-        maybeMigrateLegacyData();
-      }
-    },
-    (err) => {
-      console.error("catalog snapshot error", err);
-      setSyncStatus("error", "권한 오류");
-      showToast("가격 데이터 동기화 실패: " + (err.message || err), "error");
-    },
-  );
-
-  collectionUnsub = onSnapshot(
-    collectionDocRef(),
-    (snap) => {
-      const data = snap.exists() ? snap.data() : null;
-      const items = (data && data.items) || {};
-      collection = new Map(Object.entries(items));
-      renderCollection();
-      if (!initialCollectionLoaded) {
-        initialCollectionLoaded = true;
-        maybeMigrateLegacyData();
-      }
+      const obj = (data && data.items) || {};
+      items = new Map(Object.entries(obj));
+      migrateNumericStates();
+      renderAll();
       if (!snap.metadata.hasPendingWrites && pendingSaves === 0) {
-        setSyncStatus(navigator.onLine ? "synced" : "offline");
+        refreshSyncStatus();
+      }
+      if (!initialLoaded) {
+        initialLoaded = true;
+        if (isOwner(currentUser)) maybeMigrate();
       }
     },
     (err) => {
-      console.error("collection snapshot error", err);
+      console.error("inventory snapshot error", err);
       setSyncStatus("error", "권한 오류");
-      showToast("보유 목록 동기화 실패: " + (err.message || err), "error");
+      showToast("동기화 실패: " + (err.message || err), "error");
     },
   );
 }
 
-async function maybeMigrateLegacyData() {
+async function maybeMigrate() {
   if (migrationAttempted) return;
-  if (!initialCatalogLoaded || !initialCollectionLoaded) return;
   migrationAttempted = true;
+  if (items.size > 0) return;
+  if (!currentUser) return;
 
-  const oldCatalog = localStorage.getItem(LEGACY_KEYS.catalog);
-  const oldCollection = localStorage.getItem(LEGACY_KEYS.collection);
-  if (!oldCatalog && !oldCollection) return;
-
-  let migrated = false;
+  const uid = currentUser.uid;
   try {
-    if (oldCatalog && catalog.size === 0) {
-      const obj = JSON.parse(oldCatalog);
-      if (obj && typeof obj === "object") {
-        catalog = new Map(Object.entries(obj));
-        await saveCatalog();
-        migrated = true;
+    // 1) Migrate from legacy /users/{uid}/data/inventory
+    const personalSnap = await getDoc(legacyUserInventoryRef(uid));
+    if (personalSnap.exists()) {
+      const obj = (personalSnap.data() && personalSnap.data().items) || {};
+      const merged = new Map();
+      for (const [k, v] of Object.entries(obj)) {
+        merged.set(normalizeKey(k), {
+          no: v.no || k,
+          name: v.name || "",
+          grade: normalizeGrade(v.grade || ""),
+          value: parseInt0(v.value),
+          qty: parseInt0(v.qty),
+        });
+      }
+      if (merged.size > 0) {
+        items = merged;
+        await saveInventory();
+        showToast(`개인 인벤토리 ${merged.size}건을 공개 인벤토리로 옮겼습니다.`, "success");
+        return;
       }
     }
-    if (oldCollection && collection.size === 0) {
-      const obj = JSON.parse(oldCollection);
-      if (obj && typeof obj === "object") {
-        collection = new Map(Object.entries(obj));
-        await saveCollection();
-        migrated = true;
+
+    // 2) Migrate from legacy catalog + collection per-user docs
+    const [catalogSnap, collectionSnap] = await Promise.all([
+      getDoc(legacyUserCatalogRef(uid)),
+      getDoc(legacyUserCollectionRef(uid)),
+    ]);
+    const catalog = (catalogSnap.exists() && catalogSnap.data().items) || null;
+    const collectionItems = (collectionSnap.exists() && collectionSnap.data().items) || null;
+    if (catalog || collectionItems) {
+      const merged = new Map();
+      if (catalog) {
+        for (const [k, v] of Object.entries(catalog)) {
+          merged.set(normalizeKey(k), {
+            no: v.no || k,
+            name: v.name || "",
+            grade: "",
+            value: parseInt0(v.price),
+            qty: 0,
+          });
+        }
+      }
+      if (collectionItems) {
+        for (const [k, v] of Object.entries(collectionItems)) {
+          const key = normalizeKey(k);
+          const existing = merged.get(key);
+          merged.set(key, {
+            no: (existing && existing.no) || v.no || k,
+            name: (existing && existing.name) || v.name || "",
+            grade: (existing && existing.grade) || "",
+            value: (existing && existing.value) || parseInt0(v.price),
+            qty: parseInt0(v.qty),
+          });
+        }
+      }
+      for (const [k, v] of merged) {
+        if (!v.qty && !v.value && !v.name) merged.delete(k);
+      }
+      if (merged.size > 0) {
+        items = merged;
+        await saveInventory();
+        showToast(`기존 데이터 ${merged.size}건을 옮겼습니다.`, "success");
+        return;
       }
     }
   } catch (e) {
-    console.warn("legacy migration failed", e);
+    console.warn("legacy firestore migration skipped", e);
+  }
+
+  // 3) localStorage legacy migration
+  try {
+    const oldCatalog = localStorage.getItem(LEGACY_LS_KEYS.catalog);
+    const oldCollection = localStorage.getItem(LEGACY_LS_KEYS.collection);
+    if (!oldCatalog && !oldCollection) return;
+
+    const merged = new Map();
+    if (oldCatalog) {
+      const obj = JSON.parse(oldCatalog);
+      if (obj && typeof obj === "object") {
+        for (const [k, v] of Object.entries(obj)) {
+          merged.set(normalizeKey(k), {
+            no: v.no || k,
+            name: v.name || "",
+            grade: "",
+            value: parseInt0(v.price),
+            qty: 0,
+          });
+        }
+      }
+    }
+    if (oldCollection) {
+      const obj = JSON.parse(oldCollection);
+      if (obj && typeof obj === "object") {
+        for (const [k, v] of Object.entries(obj)) {
+          const key = normalizeKey(k);
+          const existing = merged.get(key);
+          merged.set(key, {
+            no: (existing && existing.no) || v.no || k,
+            name: (existing && existing.name) || v.name || "",
+            grade: (existing && existing.grade) || "",
+            value: (existing && existing.value) || parseInt0(v.price),
+            qty: parseInt0(v.qty),
+          });
+        }
+      }
+    }
+    for (const [k, v] of merged) {
+      if (!v.qty && !v.value && !v.name) merged.delete(k);
+    }
+    if (merged.size > 0) {
+      items = merged;
+      await saveInventory();
+      localStorage.removeItem(LEGACY_LS_KEYS.catalog);
+      localStorage.removeItem(LEGACY_LS_KEYS.collection);
+      showToast(`이전 브라우저 데이터 ${merged.size}건을 가져왔습니다.`, "success");
+    }
+  } catch (e) {
+    console.warn("localStorage migration failed", e);
+  }
+}
+
+// ---------- Render ----------
+function renderAll() {
+  applyOwnerMode();
+  renderStats();
+  renderGradeFilter();
+  renderInventory();
+  renderCart();
+}
+
+function applyOwnerMode() {
+  const owner = isOwner(currentUser);
+  document.body.classList.toggle("is-owner", owner);
+  document.body.classList.toggle("is-readonly", !owner);
+  renderAuthArea();
+}
+
+function renderAuthArea() {
+  const area = els.authArea;
+  if (!area) return;
+  if (currentUser) {
+    const owner = isOwner(currentUser);
+    const name = currentUser.displayName || currentUser.email || "사용자";
+    const email = currentUser.email || "";
+    area.innerHTML = `
+      <div class="user-chip">
+        <span class="role-badge ${owner ? "admin" : "guest"}">${owner ? "관리자" : "읽기 전용"}</span>
+        <span class="user-meta">
+          <span class="user-name">${escapeHTML(name)}</span>
+          ${email && email !== name ? `<span class="user-email">${escapeHTML(email)}</span>` : ""}
+        </span>
+        <button class="btn btn-light" id="logout-btn" type="button">로그아웃</button>
+      </div>
+    `;
+    const logoutBtn = document.getElementById("logout-btn");
+    if (logoutBtn) logoutBtn.addEventListener("click", handleLogout);
+  } else {
+    // 비로그인 상태에서는 표시할 UI 없음.
+    // 관리자 로그인은 헤더의 PokeStock 로고를 3연속 클릭하면 호출됩니다.
+    area.innerHTML = "";
+  }
+}
+
+function renderStats() {
+  let totalQty = 0;
+  let totalValue = 0;
+  const byState = new Map();
+  for (const [, v] of items) {
+    const qty = Number(v.qty) || 0;
+    const val = Number(v.value) || 0;
+    totalQty += qty;
+    totalValue += qty * val;
+    const s = v.state == null ? "__none__" : String(v.state);
+    const cur = byState.get(s) || { types: 0, qty: 0 };
+    cur.types += 1;
+    cur.qty += qty;
+    byState.set(s, cur);
+  }
+  els.statTypes.textContent = items.size.toLocaleString("ko-KR");
+  els.statQty.textContent = totalQty.toLocaleString("ko-KR");
+  els.statValue.textContent = formatWon(totalValue);
+
+  const orderedStates = Array.from(byState.keys()).sort((a, b) => {
+    if (a === "__none__") return 1;
+    if (b === "__none__") return -1;
+    return stateRank(b) - stateRank(a); // S → A → B
+  });
+  els.statGrades.innerHTML = "";
+  for (const s of orderedStates) {
+    const stat = byState.get(s);
+    const letter = s === "__none__" ? null : s;
+    const pill = document.createElement("div");
+    pill.className = "grade-pill";
+    pill.innerHTML = `
+      <span class="state-badge ${stateClass(letter)}">${letter == null ? "—" : escapeHTML(letter)}</span>
+      <span class="grade-pill-text">${stat.types}종 · ${stat.qty}장</span>
+    `;
+    els.statGrades.appendChild(pill);
+  }
+}
+
+function gradeClass(g) {
+  const u = String(g || "").toUpperCase();
+  if (u === "RR") return "g-rr";
+  if (u === "R") return "g-r";
+  if (u === "U") return "g-u";
+  if (u === "C") return "g-u";
+  if (u === "AR") return "g-ar";
+  if (u === "SR") return "g-sr";
+  if (u === "SAR") return "g-sar";
+  if (u === "UR") return "g-ur";
+  return "g-none";
+}
+
+function renderGradeFilter() {
+  const container = els.gradeFilter;
+  const presentStates = new Set();
+  for (const [, v] of items) presentStates.add(v.state == null ? "__none__" : String(v.state));
+  const states = Array.from(presentStates)
+    .filter((s) => s !== "__none__")
+    .sort((a, b) => stateRank(b) - stateRank(a)); // S → A → B
+
+  container.innerHTML = "";
+  const allBtn = document.createElement("button");
+  allBtn.className = "chip" + (activeState === "" ? " active" : "");
+  allBtn.dataset.state = "";
+  allBtn.textContent = "전체";
+  container.appendChild(allBtn);
+  for (const s of states) {
+    const btn = document.createElement("button");
+    btn.className = "chip" + (activeState === s ? " active" : "");
+    btn.dataset.state = s;
+    btn.innerHTML = `<span class="state-badge ${stateClass(s)}">${escapeHTML(s)}</span>`;
+    container.appendChild(btn);
+  }
+  if (presentStates.has("__none__")) {
+    const btn = document.createElement("button");
+    btn.className = "chip" + (activeState === "__none__" ? " active" : "");
+    btn.dataset.state = "__none__";
+    btn.textContent = "미평가";
+    container.appendChild(btn);
+  }
+}
+
+function compareItems(a, b) {
+  // 품절 상품은 정렬 방향과 무관하게 항상 뒤로
+  const aSold = (parseInt0(a.qty) || 0) <= 0;
+  const bSold = (parseInt0(b.qty) || 0) <= 0;
+  if (aSold !== bSold) return aSold ? 1 : -1;
+
+  const dir = sortDir;
+  switch (sortKey) {
+    case "no":
+      return a.no.localeCompare(b.no, "ko", { numeric: true }) * dir;
+    case "name":
+      return (a.name || "").localeCompare(b.name || "", "ko") * dir;
+    case "grade": {
+      const ra = GRADE_RANK[a.grade] != null ? GRADE_RANK[a.grade] : 99;
+      const rb = GRADE_RANK[b.grade] != null ? GRADE_RANK[b.grade] : 99;
+      if (ra !== rb) return (ra - rb) * dir;
+      return a.no.localeCompare(b.no, "ko", { numeric: true });
+    }
+    case "state": {
+      const ra = stateRank(a.state);
+      const rb = stateRank(b.state);
+      if (ra === 0 && rb === 0) return a.no.localeCompare(b.no, "ko", { numeric: true });
+      if (ra === 0) return 1;
+      if (rb === 0) return -1;
+      if (ra !== rb) return (ra - rb) * dir;
+      return a.no.localeCompare(b.no, "ko", { numeric: true });
+    }
+    case "value": {
+      const av = getEffectivePrice(a);
+      const bv = getEffectivePrice(b);
+      return (av - bv) * dir || a.no.localeCompare(b.no, "ko", { numeric: true });
+    }
+    case "qty":
+      return ((a.qty || 0) - (b.qty || 0)) * dir || a.no.localeCompare(b.no, "ko", { numeric: true });
+    case "total": {
+      const at = (a.qty || 0) * getEffectivePrice(a);
+      const bt = (b.qty || 0) * getEffectivePrice(b);
+      return (at - bt) * dir || a.no.localeCompare(b.no, "ko", { numeric: true });
+    }
+  }
+  return 0;
+}
+
+function renderInventory() {
+  const owner = isOwner(currentUser);
+  const tbody = els.inventoryBody;
+  tbody.innerHTML = "";
+  const q = String(els.inventorySearch.value || "").trim().toLowerCase();
+
+  const all = [];
+  for (const [key, v] of items) {
+    all.push({ key, ...v });
+  }
+  all.sort(compareItems);
+
+  let filtered = all;
+  if (activeState === "__none__") {
+    filtered = filtered.filter((r) => r.state == null);
+  } else if (activeState !== "") {
+    filtered = filtered.filter((r) => r.state === activeState);
+  }
+  if (q) {
+    filtered = filtered.filter(
+      (r) =>
+        r.no.toLowerCase().includes(q) ||
+        (r.name || "").toLowerCase().includes(q),
+    );
+  }
+
+  if (owner) {
+    for (const r of filtered) {
+      const total = (r.qty || 0) * (r.value || 0);
+      const tr = document.createElement("tr");
+      tr.dataset.key = r.key;
+      const thumbCell = thumbCellHTML(r, true);
+      tr.innerHTML = `
+        <td class="thumb-cell">${thumbCell}</td>
+        <td class="mono no-cell">${setChipHTML(r.no)}<span class="no-text">${escapeHTML(r.no)}</span></td>
+        <td><span class="cell-edit" data-field="name" tabindex="0">${escapeHTML(r.name || "")}<span class="cell-empty">${r.name ? "" : "이름 없음"}</span></span></td>
+        <td>
+          <select class="state-input ${stateClass(r.state)}" data-field="state" aria-label="상태">
+            <option value="" ${r.state == null ? "selected" : ""}>—</option>
+            <option value="S" ${r.state === "S" ? "selected" : ""}>S</option>
+            <option value="A" ${r.state === "A" ? "selected" : ""}>A</option>
+            <option value="B" ${r.state === "B" ? "selected" : ""}>B</option>
+          </select>
+        </td>
+        <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="50" value="${r.value || 0}" aria-label="가격" /></td>
+        <td class="discount-cell">${discountCellHTML(r)}</td>
+        <td class="num">
+          <div class="qty-cell">
+            <button class="icon-btn" data-act="dec" title="−1">−</button>
+            <input type="number" class="qty-input" data-field="qty" min="0" step="1" value="${r.qty || 0}" aria-label="재고" />
+            <button class="icon-btn" data-act="inc" title="+1">+</button>
+          </div>
+        </td>
+        <td class="num total-cell">${formatWon((r.qty || 0) * getEffectivePrice(r))}</td>
+        <td><button class="icon-btn danger" data-act="remove" title="삭제">×</button></td>
+      `;
+      tbody.appendChild(tr);
+    }
+  } else {
+    renderBuyerCards(filtered);
+  }
+
+  syncSortSelect();
+  els.inventoryCount.textContent = `${filtered.length.toLocaleString("ko-KR")} / ${items.size.toLocaleString("ko-KR")}건`;
+
+  if (items.size === 0) {
+    els.inventoryEmpty.textContent = owner
+      ? "아직 등록된 카드가 없습니다. 위에서 카드를 추가하세요."
+      : "등록된 카드가 없습니다.";
+    els.inventoryEmpty.classList.remove("hidden");
+  } else if (filtered.length === 0) {
+    els.inventoryEmpty.textContent = "조건에 맞는 카드가 없습니다.";
+    els.inventoryEmpty.classList.remove("hidden");
+  } else {
+    els.inventoryEmpty.classList.add("hidden");
+  }
+
+  const ths = els.inventoryTable.querySelectorAll("th.sortable");
+  ths.forEach((th) => {
+    th.classList.remove("sort-asc", "sort-desc");
+    if (th.dataset.sort === sortKey) {
+      th.classList.add(sortDir === 1 ? "sort-asc" : "sort-desc");
+    }
+  });
+}
+
+function renderBuyerCards(filtered) {
+  const grid = els.cardGrid;
+  if (!grid) return;
+  grid.innerHTML = "";
+  for (const r of filtered) {
+    const card = document.createElement("article");
+    card.className = "market-card";
+    card.dataset.key = r.key;
+    if (r.imageUrl) card.classList.add("has-image");
+    if (!r.qty) card.classList.add("sold-out");
+
+    const hasDiscount = isDiscountActive(r.discount);
+    const eff = getEffectivePrice(r);
+    const orig = parseInt0(r.value);
+
+    const overlays = `
+      ${r.state != null ? `<span class="market-card-state state-badge ${stateClass(r.state)}">${escapeHTML(r.state)}</span>` : ""}
+      ${r.qty > 0
+        ? `<span class="market-card-stock-badge">재고 ${r.qty}</span>`
+        : `<span class="market-card-stock-badge sold-out">품절</span>`}
+    `;
+
+    const imageBlock = r.imageUrl
+      ? `<div class="market-card-image">
+           ${overlays}
+           <img src="${escapeAttr(r.imageUrl)}${r.imageUpdatedAt ? `?t=${r.imageUpdatedAt}` : ""}" loading="lazy" alt="${escapeAttr(r.name || r.no)}" />
+         </div>`
+      : `<div class="market-card-image market-card-image-empty">
+           ${overlays}
+           <span>사진 준비 중</span>
+         </div>`;
+
+    const cartQty = getCartQty(r.key);
+    const stock = Math.max(0, parseInt0(r.qty));
+    const cartFull = stock > 0 && cartQty >= stock;
+    let addBtn;
+    if (stock <= 0) {
+      addBtn = `<button class="market-card-add" type="button" disabled>품절</button>`;
+    } else if (cartQty > 0) {
+      addBtn = `<button class="market-card-add added" type="button" data-cart-act="add" data-key="${escapeAttr(r.key)}" ${cartFull ? "disabled" : ""}>담김 (${cartQty})</button>`;
+    } else {
+      addBtn = `<button class="market-card-add" type="button" data-cart-act="add" data-key="${escapeAttr(r.key)}">담기</button>`;
+    }
+
+    const priceBlock = hasDiscount
+      ? `<div class="market-card-prices">
+           <div class="market-card-price-row"><span class="market-card-percent">${r.discount.percent}%</span><span class="market-card-orig">${formatWon(orig)}</span></div>
+           <span class="market-card-final">${formatWon(eff)}</span>
+         </div>`
+      : `<span class="market-card-price">${formatWon(orig)}</span>`;
+
+    card.innerHTML = `
+      ${imageBlock}
+      <div class="market-card-body">
+        <span class="market-card-no">${setChipHTML(r.no)}<span>${escapeHTML(r.no)}</span></span>
+        <h3 class="market-card-title">${escapeHTML(r.name || "이름 미등록")}</h3>
+        <div class="market-card-bottom">
+          ${priceBlock}
+          ${addBtn}
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+}
+
+function syncSortSelect() {
+  if (!els.sortSelect) return;
+  const v = `${sortKey}|${sortDir}`;
+  const opt = Array.from(els.sortSelect.options).find((o) => o.value === v);
+  els.sortSelect.value = opt ? v : "no|1";
+}
+
+function discountCellHTML(r) {
+  const d = r.discount;
+  if (!d || !d.percent) {
+    return `<button class="discount-btn empty" type="button" data-discount-btn>＋ 할인</button>`;
+  }
+  const expired = isDiscountExpired(d);
+  const scheduled = isDiscountScheduled(d);
+  const active = isDiscountActive(d);
+  let cls = "active";
+  let sub = "활성";
+  if (expired) { cls = "expired"; sub = "만료"; }
+  else if (scheduled) { cls = "scheduled"; sub = `D-${Math.max(1, Math.ceil((parseISO(d.startsAt) - Date.now()) / 86400000))}`; }
+  else if (active && d.endsAt) sub = timeUntilLabel(d.endsAt);
+  else if (active) sub = "무기한";
+  return `<button class="discount-btn ${cls}" type="button" data-discount-btn><span class="percent">${d.percent}%</span><span class="sub">${escapeHTML(sub)}</span></button>`;
+}
+
+function openDiscountModal(key) {
+  if (!isOwner(currentUser)) return;
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  currentDiscountKey = k;
+  currentDiscountOriginal = parseInt0(entry.value);
+  els.discountModalCard.textContent = `${entry.no}${entry.name ? " · " + entry.name : ""} · 원가 ${formatWon(currentDiscountOriginal)}`;
+  const d = entry.discount || {};
+  const percent = d.percent || "";
+  els.discountPercent.value = percent;
+  if (d.finalPrice != null && Number.isFinite(Number(d.finalPrice))) {
+    els.discountFinal.value = parseInt0(d.finalPrice);
+  } else if (percent && currentDiscountOriginal > 0) {
+    els.discountFinal.value = Math.round((currentDiscountOriginal * (100 - percent)) / 100);
+  } else {
+    els.discountFinal.value = "";
+  }
+  els.discountStart.value = isoToLocalInput(d.startsAt);
+  els.discountEnd.value = isoToLocalInput(d.endsAt);
+  els.discountModal.hidden = false;
+  document.body.classList.add("modal-open");
+  setTimeout(() => els.discountPercent.focus(), 0);
+}
+function closeDiscountModal() {
+  els.discountModal.hidden = true;
+  document.body.classList.remove("modal-open");
+  currentDiscountKey = null;
+}
+async function persistDiscount(key, discount) {
+  if (!isOwner(currentUser)) return;
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  const next = { ...entry };
+  if (!discount || !discount.percent) delete next.discount;
+  else next.discount = discount;
+  items.set(k, next);
+  renderAll();
+  await saveInventory();
+}
+
+function thumbCellHTML(r, owner) {
+  const url = r.imageUrl;
+  if (url) {
+    const cacheBust = r.imageUpdatedAt ? `?t=${r.imageUpdatedAt}` : "";
+    const imgHtml = `<img src="${escapeAttr(url)}${cacheBust}" loading="lazy" alt="${escapeAttr(r.name || r.no)}" />`;
+    if (owner) {
+      return `<div class="thumb has-image" data-img-action="view" title="크게 보기">
+        ${imgHtml}
+        <div class="thumb-actions">
+          <button class="thumb-btn" data-img-action="upload" type="button" title="사진 변경">↺</button>
+          <button class="thumb-btn danger" data-img-action="delete" type="button" title="사진 제거">×</button>
+        </div>
+      </div>`;
+    }
+    return `<div class="thumb has-image" data-img-action="view" title="크게 보기">${imgHtml}</div>`;
+  }
+  if (owner) {
+    return `<button class="thumb thumb-add" data-img-action="upload" type="button" title="사진 업로드">＋</button>`;
+  }
+  return `<div class="thumb thumb-empty">—</div>`;
+}
+
+// ---------- Images ----------
+async function resizeImage(file, maxDim = 900, quality = 0.85) {
+  if (!file.type || !file.type.startsWith("image/")) {
+    throw new Error("이미지 파일이 아닙니다.");
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("파일 읽기 실패"));
+    reader.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error("이미지 로드 실패 (HEIC 등 미지원 포맷일 수 있음)"));
+    im.src = dataUrl;
+  });
+  let { width, height } = img;
+  if (width > maxDim || height > maxDim) {
+    if (width > height) { height = Math.round((height * maxDim) / width); width = maxDim; }
+    else { width = Math.round((width * maxDim) / height); height = maxDim; }
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, width, height);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("이미지 변환 실패"))),
+      "image/jpeg",
+      quality,
+    );
+  });
+}
+
+function safeStoragePath(key) {
+  return String(key).replace(/[^a-z0-9-]/g, "_");
+}
+
+async function formatCardImage(file, options = {}) {
+  const {
+    outputSize = 1000,
+    cardSizeRatio = 0.9,
+    quality = 0.88,
+    background = "#ffffff",
+  } = options;
+  if (!file.type || !file.type.startsWith("image/")) {
+    throw new Error("이미지 파일이 아닙니다.");
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("파일 읽기 실패"));
+    reader.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error("이미지 로드 실패 (HEIC 등 미지원 포맷일 수 있음)"));
+    im.src = dataUrl;
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = outputSize;
+  canvas.height = outputSize;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, outputSize, outputSize);
+  const maxDim = outputSize * cardSizeRatio;
+  const ratio = img.width / img.height;
+  let drawW, drawH;
+  if (ratio >= 1) {
+    drawW = maxDim;
+    drawH = drawW / ratio;
+  } else {
+    drawH = maxDim;
+    drawW = drawH * ratio;
+  }
+  const drawX = (outputSize - drawW) / 2;
+  const drawY = (outputSize - drawH) / 2;
+  ctx.drawImage(img, drawX, drawY, drawW, drawH);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("이미지 변환 실패"))),
+      "image/jpeg",
+      quality,
+    );
+  });
+}
+
+async function uploadCardImage(key, file) {
+  if (!isOwner(currentUser)) {
+    showToast("관리자만 업로드할 수 있습니다.", "error");
     return;
   }
-
-  if (migrated) {
-    localStorage.removeItem(LEGACY_KEYS.catalog);
-    localStorage.removeItem(LEGACY_KEYS.collection);
-    showToast("이전 브라우저 저장 데이터를 가져왔습니다.", "success");
-  }
-}
-
-// ---------- UI helpers ----------
-function updateDataStatus() {
-  els.dataStatus.textContent =
-    catalog.size > 0 ? `${catalog.size.toLocaleString("ko-KR")}건 로드됨` : "데이터 없음";
-  els.catalogCount.textContent = `${catalog.size.toLocaleString("ko-KR")}건`;
-}
-
-function renderCatalog() {
-  const q = normalizeKey(els.catalogSearch.value);
-  const items = [];
-  for (const [key, v] of catalog) {
-    if (!q || key.includes(q) || normalizeKey(v.name).includes(q)) items.push(v);
-  }
-  items.sort((a, b) => a.no.localeCompare(b.no, "ko"));
-  const limit = 200;
-  const shown = items.slice(0, limit);
-  const tbody = els.catalogBody;
-  tbody.innerHTML = "";
-  for (const item of shown) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHTML(item.no)}</td>
-      <td>${escapeHTML(item.name || "")}</td>
-      <td class="num">${formatPrice(item.price)}</td>
-      <td class="num"><button class="icon-btn" data-add="${escapeAttr(item.no)}" title="목록에 추가">＋ 추가</button></td>
-    `;
-    tbody.appendChild(tr);
-  }
-  if (items.length > limit) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="4" class="empty">${items.length - limit}건이 더 있습니다. 검색으로 좁혀보세요.</td>`;
-    tbody.appendChild(tr);
-  }
-  if (items.length === 0) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="4" class="empty">${catalog.size === 0 ? "가격 데이터를 먼저 등록하세요." : "검색 결과가 없습니다."}</td>`;
-    tbody.appendChild(tr);
-  }
-}
-
-function renderCollection() {
-  const tbody = els.collectionBody;
-  tbody.innerHTML = "";
-  const q = normalizeKey(els.collectionSearch.value);
-
-  let totalQty = 0;
-  let totalSum = 0;
-  let visibleCount = 0;
-
-  const rows = [];
-  for (const [key, entry] of collection) {
-    const meta = catalog.get(key);
-    rows.push({
-      key,
-      no: meta ? meta.no : entry.no || key,
-      name: meta ? meta.name : entry.name || "",
-      price: meta ? meta.price : entry.price || 0,
-      qty: entry.qty || 0,
-      missing: !meta,
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  showToast(imageAutoFormat ? "사진 자동 정렬 중…" : "이미지 업로드 중…");
+  try {
+    const blob = imageAutoFormat
+      ? await formatCardImage(file, { outputSize: 1000, cardSizeRatio: 0.65, background: "#000000" })
+      : await resizeImage(file, 900, 0.85);
+    const path = `cards/${safeStoragePath(k)}.jpg`;
+    const ref = storageRef(storage, path);
+    await uploadBytes(ref, blob, {
+      contentType: "image/jpeg",
+      cacheControl: "public, max-age=31536000",
     });
+    const url = await getDownloadURL(ref);
+    items.set(k, { ...entry, imageUrl: url, imagePath: path, imageUpdatedAt: Date.now() });
+    await saveInventory();
+    renderAll();
+    showToast("이미지가 업로드되었습니다.", "success");
+  } catch (err) {
+    console.error("image upload failed", err);
+    showToast("업로드 실패: " + (err.message || err), "error");
   }
-  rows.sort((a, b) => a.no.localeCompare(b.no, "ko"));
+}
 
-  for (const r of rows) {
-    totalQty += r.qty;
-    totalSum += r.qty * r.price;
-    const matches = !q || normalizeKey(r.no).includes(q) || normalizeKey(r.name).includes(q);
-    if (!matches) continue;
-    visibleCount++;
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${escapeHTML(r.no)}${r.missing ? ' <span class="missing-tag">데이터 없음</span>' : ""}</td>
-      <td>${escapeHTML(r.name)}</td>
-      <td class="num">${formatPrice(r.price)}</td>
-      <td class="num">
-        <input type="number" class="qty-input" min="0" step="1" value="${r.qty}" data-key="${escapeAttr(r.key)}" aria-label="수량" />
-      </td>
-      <td class="num">${formatPrice(r.qty * r.price)}</td>
-      <td>
-        <div class="row-actions">
-          <button class="icon-btn" data-inc="${escapeAttr(r.key)}" title="1장 추가">＋</button>
-          <button class="icon-btn" data-dec="${escapeAttr(r.key)}" title="1장 빼기">－</button>
-          <button class="icon-btn danger" data-remove="${escapeAttr(r.key)}" title="삭제">×</button>
-        </div>
-      </td>
+async function deleteCardImage(key) {
+  if (!isOwner(currentUser)) return;
+  if (!confirm("이미지를 제거할까요?")) return;
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  try {
+    if (entry.imagePath) {
+      try {
+        await deleteObject(storageRef(storage, entry.imagePath));
+      } catch (e) {
+        console.warn("storage delete (non-fatal)", e);
+      }
+    }
+    const next = { ...entry };
+    delete next.imageUrl;
+    delete next.imagePath;
+    delete next.imageUpdatedAt;
+    items.set(k, next);
+    await saveInventory();
+    renderAll();
+    showToast("이미지가 제거되었습니다.", "success");
+  } catch (err) {
+    console.error("image delete failed", err);
+    showToast("실패: " + (err.message || err), "error");
+  }
+}
+
+async function bulkRemoveImages() {
+  if (!isOwner(currentUser)) return;
+  const withImages = Array.from(items.entries()).filter(([, v]) => v && v.imageUrl);
+  if (withImages.length === 0) {
+    showToast("제거할 이미지가 없습니다.", "error");
+    return;
+  }
+  if (!confirm(`총 ${withImages.length}장의 카드 이미지를 모두 제거할까요?\n\n인벤토리 카드 자체는 그대로 유지되고, 사진만 제거됩니다.\n되돌릴 수 없습니다.`)) return;
+
+  showToast(`이미지 ${withImages.length}장 제거 중…`);
+  let success = 0;
+  let failed = 0;
+  // Storage 삭제는 best-effort (병렬 배치)
+  const batchSize = 8;
+  for (let i = 0; i < withImages.length; i += batchSize) {
+    const batch = withImages.slice(i, i + batchSize);
+    await Promise.all(batch.map(async ([key, entry]) => {
+      try {
+        if (entry.imagePath) {
+          try { await deleteObject(storageRef(storage, entry.imagePath)); }
+          catch (e) { console.warn(`storage delete (non-fatal) ${key}`, e); }
+        }
+        const next = { ...entry };
+        delete next.imageUrl;
+        delete next.imagePath;
+        delete next.imageUpdatedAt;
+        items.set(key, next);
+        success++;
+      } catch (e) {
+        console.error(`bulk image remove failed for ${key}`, e);
+        failed++;
+      }
+    }));
+  }
+  await saveInventory();
+  renderAll();
+  showToast(
+    `이미지 ${success}장 제거 완료${failed > 0 ? ` (실패 ${failed})` : ""}`,
+    failed > 0 ? "error" : "success",
+  );
+}
+
+function openLightbox(url) {
+  if (!url) return;
+  els.lightboxImg.src = url;
+  els.lightbox.hidden = false;
+  document.body.classList.add("lightbox-open");
+}
+function closeLightbox() {
+  els.lightbox.hidden = true;
+  els.lightboxImg.src = "";
+  document.body.classList.remove("lightbox-open");
+}
+
+// ---------- Sets (확장팩 라벨) ----------
+function getSetPrefix(no) {
+  if (!no) return "";
+  const s = String(no).split(/[-\s_]/)[0];
+  return s ? s.toLowerCase() : "";
+}
+function getSetName(no) {
+  const p = getSetPrefix(no);
+  return p ? (sets.get(p) || "") : "";
+}
+function setChipHTML(no) {
+  const name = getSetName(no);
+  return name ? `<span class="set-chip">${escapeHTML(name)}</span>` : "";
+}
+
+function setsDocRef() { return doc(db, "public", "sets"); }
+
+function attachSetsListener() {
+  if (setsUnsub) setsUnsub();
+  setsUnsub = onSnapshot(
+    setsDocRef(),
+    (snap) => {
+      const data = snap.exists() ? snap.data() : null;
+      const obj = (data && data.items) || {};
+      sets = new Map(Object.entries(obj));
+      renderSets();
+      renderInventory();
+    },
+    (err) => {
+      console.warn("sets snapshot error", err);
+    },
+  );
+}
+
+async function saveSets() {
+  if (!isOwner(currentUser)) return;
+  const obj = {};
+  for (const [k, v] of sets) obj[k] = v;
+  beginSaving();
+  try {
+    await setDoc(setsDocRef(), {
+      items: obj,
+      updatedAt: serverTimestamp(),
+      updatedBy: currentUser?.email || null,
+    });
+  } catch (e) {
+    console.error("saveSets failed", e);
+    showToast("라벨 저장 실패: " + (e.message || e), "error");
+  } finally {
+    endSaving();
+  }
+}
+
+async function upsertSet(prefix, name) {
+  if (!isOwner(currentUser)) return;
+  const p = String(prefix || "").trim().toLowerCase();
+  const n = String(name || "").trim();
+  if (!p || !n) {
+    showToast("접두어와 이름을 모두 입력하세요.", "error");
+    return;
+  }
+  sets.set(p, n);
+  renderSets();
+  renderInventory();
+  await saveSets();
+  showToast(`라벨 저장: ${p} → ${n}`, "success");
+}
+
+async function removeSet(prefix) {
+  if (!isOwner(currentUser)) return;
+  const p = String(prefix || "").trim().toLowerCase();
+  if (!sets.has(p)) return;
+  if (!confirm(`'${p}' 라벨을 삭제할까요?`)) return;
+  sets.delete(p);
+  renderSets();
+  renderInventory();
+  await saveSets();
+}
+
+function renderSets() {
+  const list = els.setsList;
+  if (!list) return;
+  list.innerHTML = "";
+  if (sets.size === 0) {
+    list.innerHTML = `<p class="empty sets-empty">등록된 라벨이 없습니다.</p>`;
+    return;
+  }
+  const sorted = Array.from(sets.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  for (const [prefix, name] of sorted) {
+    const item = document.createElement("div");
+    item.className = "set-item";
+    item.innerHTML = `
+      <span class="set-chip">${escapeHTML(name)}</span>
+      <span class="set-item-prefix">${escapeHTML(prefix)}</span>
+      <button class="icon-btn danger" data-set-remove="${escapeAttr(prefix)}" type="button" aria-label="삭제">×</button>
     `;
-    tbody.appendChild(tr);
+    list.appendChild(item);
   }
+}
 
-  if (rows.length === 0) {
-    els.collectionEmpty.textContent = "아직 추가된 카드가 없습니다.";
-    els.collectionEmpty.classList.remove("hidden");
-  } else if (visibleCount === 0) {
-    els.collectionEmpty.textContent = "검색 결과가 없습니다.";
-    els.collectionEmpty.classList.remove("hidden");
+// ---------- Cart ----------
+function persistCart() {
+  try { localStorage.setItem("pokemon_cart_v1", JSON.stringify(cart)); } catch (e) {}
+}
+function cartCount() {
+  let n = 0;
+  for (const k in cart) n += cart[k] || 0;
+  return n;
+}
+function getCartQty(key) {
+  return cart[normalizeKey(key)] || 0;
+}
+function addToCart(key, delta = 1) {
+  const k = normalizeKey(key);
+  const item = items.get(k);
+  if (!item) return;
+  const stock = Math.max(0, parseInt0(item.qty));
+  if (stock <= 0 && delta > 0) {
+    showToast("품절된 카드입니다.", "error");
+    return;
+  }
+  const cur = cart[k] || 0;
+  let next = cur + delta;
+  if (next > stock) {
+    next = stock;
+    showToast(`재고는 최대 ${stock}장까지 담을 수 있어요.`, "error");
+  }
+  if (next <= 0) delete cart[k];
+  else cart[k] = next;
+  persistCart();
+  renderCart();
+  updateCardAddButton(k);
+}
+function setCartQty(key, qty) {
+  const k = normalizeKey(key);
+  const item = items.get(k);
+  if (!item) return;
+  const stock = Math.max(0, parseInt0(item.qty));
+  let n = Math.max(0, Math.min(stock, parseInt0(qty)));
+  if (n <= 0) delete cart[k];
+  else cart[k] = n;
+  persistCart();
+  renderCart();
+  updateCardAddButton(k);
+}
+function removeFromCart(key) {
+  const k = normalizeKey(key);
+  delete cart[k];
+  persistCart();
+  renderCart();
+  updateCardAddButton(k);
+}
+function clearCart() {
+  const keys = Object.keys(cart);
+  cart = {};
+  persistCart();
+  renderCart();
+  for (const k of keys) updateCardAddButton(k);
+}
+
+function updateCardAddButton(key) {
+  if (!els.cardGrid) return;
+  const k = normalizeKey(key);
+  const selector = `.market-card[data-key="${CSS && CSS.escape ? CSS.escape(k) : k}"]`;
+  const card = els.cardGrid.querySelector(selector);
+  if (!card) return;
+  const oldBtn = card.querySelector(".market-card-add");
+  if (!oldBtn) return;
+  const item = items.get(k);
+  if (!item) return;
+  const stock = Math.max(0, parseInt0(item.qty));
+  const cartQty = getCartQty(k);
+  let html;
+  if (stock <= 0) {
+    html = `<button class="market-card-add" type="button" disabled>품절</button>`;
+  } else if (cartQty > 0) {
+    const cartFull = cartQty >= stock;
+    html = `<button class="market-card-add added" type="button" data-cart-act="add" data-key="${escapeAttr(k)}" ${cartFull ? "disabled" : ""}>담김 (${cartQty})</button>`;
   } else {
-    els.collectionEmpty.classList.add("hidden");
+    html = `<button class="market-card-add" type="button" data-cart-act="add" data-key="${escapeAttr(k)}">담기</button>`;
   }
+  oldBtn.outerHTML = html;
+}
 
-  els.totalsCount.textContent = `${rows.length}종 / ${totalQty.toLocaleString("ko-KR")}장`;
-  els.totalsSum.textContent = formatPrice(totalSum);
+function renderCart() {
+  if (!els.cartFab) return;
+  const count = cartCount();
+  els.cartFab.hidden = count === 0;
+  if (els.cartFabCount) els.cartFabCount.textContent = count.toLocaleString("ko-KR");
+
+  const body = els.cartDrawerBody;
+  if (!body) return;
+  body.innerHTML = "";
+  let totalQty = 0;
+  let totalValue = 0;
+  const entries = Object.entries(cart);
+  if (entries.length === 0) {
+    body.innerHTML = `<p class="empty">장바구니가 비어 있습니다.</p>`;
+  } else {
+    for (const [key, qty] of entries) {
+      const item = items.get(key);
+      if (!item) {
+        const row = document.createElement("div");
+        row.className = "cart-item missing";
+        row.innerHTML = `
+          <div class="cart-item-info">
+            <div class="cart-item-name">삭제된 카드</div>
+            <div class="cart-item-no">${escapeHTML(key)}</div>
+          </div>
+          <button class="icon-btn danger" data-cart-act="remove" data-key="${escapeAttr(key)}">×</button>
+        `;
+        body.appendChild(row);
+        continue;
+      }
+      const stock = Math.max(0, parseInt0(item.qty));
+      const eff = getEffectivePrice(item);
+      const orig = parseInt0(item.value);
+      const hasDiscount = eff < orig;
+      const lineTotal = qty * eff;
+      totalQty += qty;
+      totalValue += lineTotal;
+      const row = document.createElement("div");
+      row.className = "cart-item";
+      row.dataset.key = key;
+      const thumb = item.imageUrl
+        ? `<img class="cart-item-thumb" src="${escapeAttr(item.imageUrl)}${item.imageUpdatedAt ? `?t=${item.imageUpdatedAt}` : ""}" alt="" loading="lazy" />`
+        : `<div class="cart-item-thumb empty">—</div>`;
+      const priceLine = hasDiscount
+        ? `<span class="cart-item-percent">${item.discount.percent}%</span> <s>${formatWon(orig)}</s> ${formatWon(eff)}`
+        : `${formatWon(eff)}`;
+      row.innerHTML = `
+        ${thumb}
+        <div class="cart-item-info">
+          <div class="cart-item-name">${escapeHTML(item.name || "이름 미등록")}</div>
+          <div class="cart-item-no">${escapeHTML(item.no)} · ${priceLine}</div>
+        </div>
+        <div class="cart-item-qty">
+          <button class="icon-btn" data-cart-act="dec" data-key="${escapeAttr(key)}" type="button">−</button>
+          <input type="number" class="cart-qty-input" data-key="${escapeAttr(key)}" min="0" max="${stock}" value="${qty}" aria-label="수량" />
+          <button class="icon-btn" data-cart-act="inc" data-key="${escapeAttr(key)}" type="button">+</button>
+        </div>
+        <button class="icon-btn danger cart-item-remove" data-cart-act="remove" data-key="${escapeAttr(key)}" type="button" aria-label="삭제">×</button>
+      `;
+      body.appendChild(row);
+    }
+  }
+  if (els.cartTotalQty) els.cartTotalQty.textContent = totalQty.toLocaleString("ko-KR");
+  if (els.cartTotalValue) els.cartTotalValue.textContent = formatWon(totalValue);
+  if (els.cartSubmit) els.cartSubmit.disabled = totalQty === 0;
+}
+
+function openCartDrawer() {
+  els.cartDrawer.hidden = false;
+  els.cartBackdrop.hidden = false;
+  document.body.classList.add("drawer-open");
+}
+function closeCartDrawer() {
+  els.cartDrawer.hidden = true;
+  els.cartBackdrop.hidden = true;
+  document.body.classList.remove("drawer-open");
+}
+
+// ---------- Purchase request ----------
+const CODE_CHARS = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"; // 0,O,1,I,L 제외
+function generateCode(len = 5) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  }
+  return s;
+}
+
+async function submitPurchaseRequest() {
+  const entries = Object.entries(cart);
+  if (entries.length === 0) {
+    showToast("장바구니가 비어 있습니다.", "error");
+    return;
+  }
+  const cartItems = [];
+  let totalQty = 0;
+  let totalValue = 0;
+  for (const [key, qty] of entries) {
+    const item = items.get(key);
+    if (!item || qty <= 0) continue;
+    const eff = getEffectivePrice(item);
+    const discountSnap = isDiscountActive(item.discount)
+      ? {
+          percent: item.discount.percent,
+          startsAt: item.discount.startsAt || null,
+          endsAt: item.discount.endsAt || null,
+        }
+      : null;
+    cartItems.push({
+      key,
+      no: item.no,
+      name: item.name || "",
+      qty,
+      value: item.value || 0,
+      effectivePrice: eff,
+      discount: discountSnap,
+      state: item.state == null ? null : item.state,
+      grade: item.grade || "",
+      imageUrl: item.imageUrl || "",
+    });
+    totalQty += qty;
+    totalValue += qty * eff;
+  }
+  if (cartItems.length === 0) {
+    showToast("유효한 카드가 없습니다.", "error");
+    return;
+  }
+  if (els.cartSubmit) els.cartSubmit.disabled = true;
+  showToast("요청 코드 생성 중…");
+
+  let success = false;
+  let lastErr = null;
+  let code = null;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    code = generateCode(5);
+    try {
+      await setDoc(doc(db, "requests", code), {
+        code,
+        items: cartItems,
+        totalQty,
+        totalValue,
+        status: "pending",
+        createdAt: serverTimestamp(),
+      });
+      success = true;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (e && e.code === "permission-denied") {
+        // collision (existing doc cannot be updated by anonymous) → retry with new code
+        continue;
+      }
+      break;
+    }
+  }
+  if (els.cartSubmit) els.cartSubmit.disabled = cartCount() === 0;
+  if (!success) {
+    showToast("요청 전송 실패: " + ((lastErr && lastErr.message) || "잠시 후 다시 시도해 주세요."), "error");
+    return;
+  }
+  clearCart();
+  closeCartDrawer();
+  openCodeModal(code, totalQty, totalValue);
+}
+
+function openCodeModal(code, totalQty, totalValue) {
+  els.codeDisplay.textContent = code;
+  if (els.codeModalMeta) {
+    els.codeModalMeta.textContent = `총 ${totalQty}장 · ${formatWon(totalValue)}`;
+  }
+  els.codeModal.hidden = false;
+  document.body.classList.add("modal-open");
+}
+function closeCodeModal() {
+  els.codeModal.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+// ---------- Admin: lookup & process request ----------
+async function lookupRequest(rawCode) {
+  if (!isOwner(currentUser)) return;
+  const code = String(rawCode || "").trim().toUpperCase();
+  if (!code) {
+    showToast("코드를 입력하세요.", "error");
+    return;
+  }
+  els.requestResult.innerHTML = `<p class="empty">조회 중…</p>`;
+  try {
+    const snap = await getDoc(doc(db, "requests", code));
+    if (!snap.exists()) {
+      els.requestResult.innerHTML = `<p class="empty">해당 코드의 요청이 없습니다.</p>`;
+      lastRequest = null;
+      return;
+    }
+    const data = snap.data();
+    lastRequest = { code, data };
+    renderRequestResult(code, data);
+  } catch (e) {
+    console.error("lookupRequest failed", e);
+    els.requestResult.innerHTML = `<p class="empty">조회 실패: ${escapeHTML(e.message || String(e))}</p>`;
+  }
+}
+
+function renderRequestResult(code, data) {
+  const status = data.status || "pending";
+  const statusLabel = { pending: "대기 중", completed: "판매 완료", cancelled: "취소" }[status] || status;
+  const created = data.createdAt && data.createdAt.toDate ? data.createdAt.toDate() : null;
+  const reqItems = Array.isArray(data.items) ? data.items : [];
+
+  const stockWarning = [];
+  const rows = reqItems.map((it) => {
+    const cur = items.get(normalizeKey(it.key));
+    const stock = cur ? parseInt0(cur.qty) : 0;
+    const insufficient = stock < (it.qty || 0);
+    if (insufficient) stockWarning.push(`${it.no} (요청 ${it.qty} / 재고 ${stock})`);
+    const stateBadge = it.state != null
+      ? `<span class="state-badge ${stateClass(it.state)}">${escapeHTML(String(it.state))}</span>`
+      : "";
+    const orig = it.value || 0;
+    const linePrice = it.effectivePrice != null ? it.effectivePrice : orig;
+    const lineTotal = linePrice * (it.qty || 0);
+    const discountTag = it.discount && it.discount.percent
+      ? ` <span class="discount-tag">${it.discount.percent}% 할인</span>`
+      : "";
+    const priceCell = linePrice !== orig
+      ? `<s>${formatWon(orig)}</s> ${formatWon(linePrice)}`
+      : formatWon(orig);
+    return `
+      <tr>
+        <td class="mono">${escapeHTML(it.no)}</td>
+        <td>${escapeHTML(it.name || "")}${cur ? "" : ' <span class="missing-tag">삭제됨</span>'}${discountTag}</td>
+        <td>${stateBadge}</td>
+        <td class="num">${priceCell}</td>
+        <td class="num">${(it.qty || 0).toLocaleString("ko-KR")}${insufficient ? ` <span class="missing-tag">재고 ${stock}</span>` : ""}</td>
+        <td class="num">${formatWon(lineTotal)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  const canComplete = status === "pending" && stockWarning.length === 0 && reqItems.length > 0;
+  const actions = status === "pending"
+    ? `
+      <button class="btn btn-primary" id="request-complete" type="button" ${canComplete ? "" : "disabled"}>판매 완료 처리</button>
+      <button class="btn btn-danger" id="request-cancel" type="button">거절</button>
+    `
+    : `<span class="data-status">처리 완료된 요청입니다.</span>`;
+
+  els.requestResult.innerHTML = `
+    <div class="request-summary">
+      <div class="request-summary-head">
+        <span class="request-code">${escapeHTML(code)}</span>
+        <span class="request-status request-status-${status}">${statusLabel}</span>
+        ${created ? `<span class="request-time">${created.toLocaleString("ko-KR")}</span>` : ""}
+      </div>
+      ${stockWarning.length > 0 ? `<div class="request-warning">⚠️ 재고 부족: ${escapeHTML(stockWarning.join(", "))}</div>` : ""}
+      <div class="table-wrap">
+        <table class="request-table">
+          <thead>
+            <tr>
+              <th>일련번호</th>
+              <th>카드명</th>
+              <th>상태</th>
+              <th class="num">단가</th>
+              <th class="num">수량</th>
+              <th class="num">합계</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="4" class="num"><strong>합계</strong></td>
+              <td class="num"><strong>${(data.totalQty || 0).toLocaleString("ko-KR")}장</strong></td>
+              <td class="num"><strong>${formatWon(data.totalValue || 0)}</strong></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div class="request-actions">${actions}</div>
+    </div>
+  `;
+
+  const completeBtn = document.getElementById("request-complete");
+  const cancelBtn = document.getElementById("request-cancel");
+  if (completeBtn) completeBtn.addEventListener("click", () => completeRequest(code, data));
+  if (cancelBtn) cancelBtn.addEventListener("click", () => cancelRequest(code));
+}
+
+async function completeRequest(code, data) {
+  if (!isOwner(currentUser)) return;
+  const reqItems = Array.isArray(data.items) ? data.items : [];
+  for (const it of reqItems) {
+    const cur = items.get(normalizeKey(it.key));
+    const stock = cur ? parseInt0(cur.qty) : 0;
+    if (!cur) {
+      showToast(`삭제된 카드: ${it.no}`, "error");
+      return;
+    }
+    if (stock < (it.qty || 0)) {
+      showToast(`재고 부족: ${it.no} (요청 ${it.qty} / 재고 ${stock})`, "error");
+      return;
+    }
+  }
+  if (!confirm(`총 ${data.totalQty}장 / ${formatWon(data.totalValue)} 판매로 처리할까요? 재고가 차감됩니다.`)) return;
+  try {
+    for (const it of reqItems) {
+      const k = normalizeKey(it.key);
+      const cur = items.get(k);
+      if (!cur) continue;
+      const newQty = Math.max(0, parseInt0(cur.qty) - (it.qty || 0));
+      items.set(k, { ...cur, qty: newQty });
+    }
+    await saveInventory();
+    await setDoc(doc(db, "requests", code), {
+      status: "completed",
+      completedAt: serverTimestamp(),
+      completedBy: currentUser.email || null,
+    }, { merge: true });
+    showToast(`${code} 요청 판매 처리 완료`, "success");
+    await lookupRequest(code);
+    renderAll();
+  } catch (e) {
+    console.error("completeRequest failed", e);
+    showToast("처리 실패: " + (e.message || e), "error");
+  }
+}
+
+async function cancelRequest(code) {
+  if (!isOwner(currentUser)) return;
+  if (!confirm(`${code} 요청을 거절(취소) 처리할까요? 재고는 변하지 않습니다.`)) return;
+  try {
+    await setDoc(doc(db, "requests", code), {
+      status: "cancelled",
+      cancelledAt: serverTimestamp(),
+      cancelledBy: currentUser.email || null,
+    }, { merge: true });
+    showToast(`${code} 요청 거절 처리`, "success");
+    await lookupRequest(code);
+  } catch (e) {
+    console.error("cancelRequest failed", e);
+    showToast("처리 실패: " + (e.message || e), "error");
+  }
 }
 
 // ---------- Mutations ----------
-async function addCardByNo(rawNo, qty = 1) {
-  const key = normalizeKey(rawNo);
-  if (!key) return { ok: false, msg: "일련번호를 입력하세요." };
-  const meta = catalog.get(key);
-  const entry = collection.get(key) || { qty: 0 };
-  entry.qty = (entry.qty || 0) + qty;
-  if (meta) {
-    entry.no = meta.no;
-    entry.name = meta.name;
-    entry.price = meta.price;
-  } else {
-    entry.no = entry.no || rawNo.trim();
-    entry.name = entry.name || "";
-    entry.price = entry.price || 0;
+async function upsertCard({ no, name, grade, state, value, qty }, mode = "merge") {
+  if (!isOwner(currentUser)) {
+    showToast("관리자 로그인이 필요합니다.", "error");
+    return { ok: false, msg: "권한 없음" };
   }
-  if (entry.qty <= 0) collection.delete(key);
-  else collection.set(key, entry);
-  renderCollection();
-  await saveCollection();
-  return {
-    ok: true,
-    meta,
-    msg: meta
-      ? `추가됨: ${meta.no} ${meta.name} (${formatPrice(meta.price)})`
-      : `추가됨: ${rawNo.trim()} (가격 데이터 없음)`,
+  const trimmedNo = String(no || "").trim();
+  const key = normalizeKey(trimmedNo);
+  if (!key) return { ok: false, msg: "일련번호를 입력하세요." };
+  const existing = items.get(key);
+  const incomingState = state != null && state !== "" ? normalizeState(state) : null;
+  const next = {
+    ...(existing || {}),
+    no: trimmedNo,
+    name: name != null && name !== "" ? String(name).trim() : (existing ? existing.name : ""),
+    grade: grade != null && grade !== "" ? normalizeGrade(grade) : (existing ? existing.grade : ""),
+    state: incomingState != null ? incomingState : (existing ? (existing.state ?? null) : "S"),
+    value: value != null && value !== "" ? parseInt0(value) : (existing ? existing.value : 0),
+    qty: 0,
   };
+  const incomingQty = Math.max(0, parseInt0(qty) || 0);
+  if (mode === "merge") {
+    next.qty = (existing ? Math.max(0, parseInt0(existing.qty)) : 0) + incomingQty;
+  } else {
+    next.qty = incomingQty;
+  }
+  items.set(key, next);
+  renderAll();
+  await saveInventory();
+  return { ok: true, item: next, wasNew: !existing };
 }
 
-async function setQty(key, qty) {
+async function updateField(key, field, raw) {
+  if (!isOwner(currentUser)) return;
   const k = normalizeKey(key);
-  qty = Math.max(0, Math.floor(Number(qty) || 0));
-  const entry = collection.get(k);
+  const entry = items.get(k);
   if (!entry) return;
-  if (qty === 0) collection.delete(k);
-  else { entry.qty = qty; collection.set(k, entry); }
-  renderCollection();
-  await saveCollection();
+  const next = { ...entry };
+  if (field === "name") next.name = String(raw || "").trim();
+  else if (field === "grade") next.grade = normalizeGrade(raw);
+  else if (field === "state") next.state = (raw === "" || raw == null) ? null : normalizeState(raw);
+  else if (field === "value") next.value = Math.max(0, parseInt0(raw));
+  else if (field === "qty") {
+    next.qty = Math.max(0, parseInt0(raw));
+  } else return;
+  items.set(k, next);
+  renderAll();
+  await saveInventory();
+}
+
+async function adjustQty(key, delta) {
+  if (!isOwner(currentUser)) return;
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  const q = Math.max(0, (parseInt0(entry.qty) || 0) + delta);
+  items.set(k, { ...entry, qty: q });
+  renderAll();
+  await saveInventory();
 }
 
 async function removeCard(key) {
-  collection.delete(normalizeKey(key));
-  renderCollection();
-  await saveCollection();
+  if (!isOwner(currentUser)) return;
+  items.delete(normalizeKey(key));
+  renderAll();
+  await saveInventory();
+}
+
+// ---------- Auth handlers ----------
+let loginInProgress = false;
+
+async function handleLogin() {
+  if (loginInProgress) return;
+  loginInProgress = true;
+  showToast("로그인 시도 중…");
+  setSyncStatus("connecting", "로그인 중…");
+  try {
+    // 1차 시도: popup
+    try {
+      await signInWithPopup(auth, googleProvider);
+      return; // 성공 시 onAuthStateChanged가 발화됨
+    } catch (popupErr) {
+      console.warn("popup login failed", popupErr);
+      const code = popupErr && popupErr.code;
+      if (code === "auth/popup-closed-by-user") return;
+      if (code === "auth/cancelled-popup-request") return;
+      // popup 차단/미지원이면 redirect 로 폴백
+      if (code === "auth/popup-blocked" ||
+          code === "auth/operation-not-supported-in-this-environment" ||
+          code === "auth/web-storage-unsupported" ||
+          /cancel/i.test(popupErr.message || "")) {
+        showToast("팝업이 차단되어 페이지 이동 방식으로 시도합니다…");
+        await signInWithRedirect(auth, googleProvider);
+        return; // 페이지가 Google로 이동
+      }
+      throw popupErr;
+    }
+  } catch (err) {
+    console.error("login failed", err);
+    refreshSyncStatus();
+    showToast(`로그인 실패: ${(err && (err.code || err.message)) || err}`, "error");
+  } finally {
+    loginInProgress = false;
+  }
+}
+
+async function handleLogout() {
+  try {
+    await signOut(auth);
+    showToast("로그아웃되었습니다.", "success");
+  } catch (err) {
+    console.error("logout failed", err);
+    showToast("로그아웃 실패: " + (err.message || err), "error");
+  }
 }
 
 // ---------- Suggestions ----------
 let suggestionIndex = -1;
 function showSuggestions(query) {
-  const q = normalizeKey(query);
+  const q = String(query || "").trim().toLowerCase();
   const list = els.suggestions;
   list.innerHTML = "";
   suggestionIndex = -1;
-  if (!q || catalog.size === 0) {
+  if (!q || items.size === 0) {
     list.classList.add("hidden");
     return;
   }
   const matches = [];
-  for (const [key, v] of catalog) {
-    if (key.includes(q) || normalizeKey(v.name).includes(q)) {
+  for (const [, v] of items) {
+    if (
+      v.no.toLowerCase().includes(q) ||
+      (v.name || "").toLowerCase().includes(q)
+    ) {
       matches.push(v);
-      if (matches.length >= 10) break;
+      if (matches.length >= 8) break;
     }
   }
   if (matches.length === 0) {
@@ -540,7 +1962,7 @@ function showSuggestions(query) {
     li.dataset.no = m.no;
     li.innerHTML = `
       <span><span class="no">${escapeHTML(m.no)}</span> &nbsp; ${escapeHTML(m.name || "")}</span>
-      <span class="price">${formatPrice(m.price)}</span>
+      <span class="meta">${m.state != null ? `<span class="state-badge ${stateClass(m.state)}">${escapeHTML(String(m.state))}</span>` : ""} ${formatWon(m.value || 0)}</span>
     `;
     list.appendChild(li);
   }
@@ -548,66 +1970,36 @@ function showSuggestions(query) {
 }
 
 function moveSuggestion(delta) {
-  const items = Array.from(els.suggestions.querySelectorAll("li"));
-  if (items.length === 0) return;
-  suggestionIndex = (suggestionIndex + delta + items.length) % items.length;
-  items.forEach((it, i) => it.classList.toggle("active", i === suggestionIndex));
-  items[suggestionIndex].scrollIntoView({ block: "nearest" });
-}
-
-function previewCard(query) {
-  const q = normalizeKey(query);
-  if (!q) {
-    els.cardPreview.textContent = "";
-    els.cardPreview.classList.remove("found", "error");
-    return;
-  }
-  const meta = catalog.get(q);
-  if (meta) {
-    els.cardPreview.textContent = `${meta.no} · ${meta.name} · ${formatPrice(meta.price)}`;
-    els.cardPreview.classList.add("found");
-    els.cardPreview.classList.remove("error");
-  } else {
-    els.cardPreview.textContent =
-      catalog.size === 0
-        ? "가격 데이터를 먼저 등록하세요."
-        : "일치하는 카드가 없습니다 (가격 0원으로 추가됩니다).";
-    els.cardPreview.classList.remove("found");
-    els.cardPreview.classList.add("error");
-  }
+  const list = Array.from(els.suggestions.querySelectorAll("li"));
+  if (list.length === 0) return;
+  suggestionIndex = (suggestionIndex + delta + list.length) % list.length;
+  list.forEach((it, i) => it.classList.toggle("active", i === suggestionIndex));
+  list[suggestionIndex].scrollIntoView({ block: "nearest" });
 }
 
 // ---------- Export ----------
-function exportCollectionCSV() {
-  if (collection.size === 0) {
-    showToast("내보낼 카드가 없습니다.", "error");
+function exportCSV() {
+  if (items.size === 0) {
+    showToast("내보낼 데이터가 없습니다.", "error");
     return;
   }
-  const rows = [["번호", "카드 이름", "단가", "수량", "합계"]];
+  const rows = [["일련번호", "카드명", "등급", "상태", "가치", "보유 수량", "합계"]];
   let total = 0;
-  const items = [];
-  for (const [key, entry] of collection) {
-    const meta = catalog.get(key);
-    items.push({
-      no: meta ? meta.no : entry.no || key,
-      name: meta ? meta.name : entry.name || "",
-      price: meta ? meta.price : entry.price || 0,
-      qty: entry.qty || 0,
-    });
-  }
-  items.sort((a, b) => a.no.localeCompare(b.no, "ko"));
-  for (const r of items) {
-    const sum = r.price * r.qty;
+  const sorted = Array.from(items.values()).sort((a, b) =>
+    a.no.localeCompare(b.no, "ko", { numeric: true }),
+  );
+  for (const r of sorted) {
+    const sum = (r.qty || 0) * (r.value || 0);
     total += sum;
-    rows.push([r.no, r.name, r.price, r.qty, sum]);
+    rows.push([r.no, r.name, r.grade, r.state == null ? "" : r.state, r.value, r.qty, sum]);
   }
-  rows.push(["", "합계", "", "", total]);
+  rows.push(["", "", "", "", "", "합계", total]);
   const csv = rows.map((r) => r.map(csvEscape).join(",")).join("\n");
   const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `pokemon-collection-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `pokemon-inventory-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -618,43 +2010,13 @@ function csvEscape(v) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-// ---------- Sample ----------
-const SAMPLE_DATA =
-`순번\t번호\t카드 이름\t가격(원)
-1\tsv10 001\t피콘\t300
-2\tsv10 002\t버섯꼬\t300
-3\tsv10 003\t버섯모\t300
-4\tsv10 004\t커트로토무\t300
-5\tsv10 005\t짜랑랑\t300
-6\tsv10 006\t라란티스\t500
-7\tsv10 007\t로켓단의 두루지벌레\t300
-8\tsv10 008\t로켓단의 타랜툴라\t800
-9\tsv10 009\t로켓단의 트래피더\t3500
-10\tsv10 010\t미니브\t300
-11\tsv10 011\t올리뇨\t300
-12\tsv10 012\t올리르바ex\t2000
-13\tsv10 013\t가디\t300
-14\tsv10 014\t윈디\t300
-15\tsv10 015\t로켓단의 파이어ex\t2500
-16\tsv10 016\t로켓단의 델빌\t300
-17\tsv10 017\t로켓단의 헬가\t300
-18\tsv10 018\t아차모\t600
-19\tsv10 019\t영치코\t800
-20\tsv10 020\t번치코\t2000
-21\tsv10 021\t히트로토무\t300
-22\tsv10 022\t로켓단의 프리져\t3000
-23\tsv10 023\t진주몽\t300
-24\tsv10 024\t헌테일\t500
-25\tsv10 025\t분홍장이\t800
-26\tsv10 026\t눈쓰개\t300`;
-
 // ---------- Wiring ----------
 els.csvFile.addEventListener("change", (e) => {
   const file = e.target.files && e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
   reader.onload = () => {
-    importCatalogFromText(String(reader.result || ""));
+    importFromText(String(reader.result || ""));
     els.csvFile.value = "";
   };
   reader.readAsText(file, "utf-8");
@@ -665,138 +2027,504 @@ els.pasteToggle.addEventListener("click", () => {
   if (!els.pasteArea.classList.contains("hidden")) els.pasteInput.focus();
 });
 els.pasteApply.addEventListener("click", () => {
-  importCatalogFromText(els.pasteInput.value);
+  importFromText(els.pasteInput.value);
+  els.pasteInput.value = "";
+  els.pasteArea.classList.add("hidden");
 });
-els.sampleLoad.addEventListener("click", () => {
-  els.pasteArea.classList.remove("hidden");
-  els.pasteInput.value = SAMPLE_DATA;
-  els.pasteInput.focus();
-});
-els.dataClear.addEventListener("click", async () => {
-  if (catalog.size === 0) return;
-  if (!confirm("가격 데이터를 모두 삭제할까요? (보유 목록은 유지됩니다)")) return;
-  catalog = new Map();
-  updateDataStatus();
-  renderCatalog();
-  renderCollection();
-  await saveCatalog();
+els.pasteCancel.addEventListener("click", () => {
+  els.pasteInput.value = "";
+  els.pasteArea.classList.add("hidden");
 });
 
 els.addForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const no = els.cardInput.value.trim();
-  const qty = Math.max(1, parseInt(els.qtyInput.value, 10) || 1);
+  const no = els.cardNo.value.trim();
+  const name = els.cardName.value.trim();
+  const grade = els.cardGrade.value;
+  const state = els.cardState.value;
+  const value = els.cardValue.value;
+  const qty = Math.max(1, parseInt(els.cardQty.value, 10) || 1);
   if (!no) return;
-  const result = await addCardByNo(no, qty);
+  const result = await upsertCard({ no, name, grade, state, value, qty }, "merge");
   if (result.ok) {
-    els.cardPreview.textContent = result.msg;
-    els.cardPreview.classList.remove("error");
-    els.cardPreview.classList.add("found");
-    els.cardInput.value = "";
-    els.qtyInput.value = "1";
+    showToast(
+      result.wasNew ? `추가됨: ${result.item.no}` : `수량 업데이트: ${result.item.no} (${result.item.qty}장)`,
+      "success",
+    );
+    els.cardNo.value = "";
+    els.cardName.value = "";
+    els.cardGrade.value = "";
+    els.cardState.value = "S";
+    els.cardValue.value = "";
+    els.cardQty.value = "1";
     els.suggestions.classList.add("hidden");
-    els.cardInput.focus();
-  } else {
-    els.cardPreview.textContent = result.msg;
-    els.cardPreview.classList.add("error");
+    els.cardPreview.textContent = "";
+    els.cardPreview.classList.remove("found", "error");
+    els.cardNo.focus();
   }
 });
 
-els.cardInput.addEventListener("input", (e) => {
+els.cardNo.addEventListener("input", (e) => {
   const v = e.target.value;
   showSuggestions(v);
-  previewCard(v);
+  const key = normalizeKey(v);
+  const existing = key ? items.get(key) : null;
+  if (existing) {
+    els.cardPreview.textContent = `이미 등록된 카드: ${existing.no} ${existing.name || ""} (현재 ${existing.qty}장) — 수량이 합산됩니다.`;
+    els.cardPreview.classList.add("found");
+    els.cardPreview.classList.remove("error");
+  } else {
+    els.cardPreview.textContent = "";
+    els.cardPreview.classList.remove("found", "error");
+  }
 });
-els.cardInput.addEventListener("keydown", (e) => {
+els.cardNo.addEventListener("keydown", (e) => {
   if (e.key === "ArrowDown") { e.preventDefault(); moveSuggestion(1); }
   else if (e.key === "ArrowUp") { e.preventDefault(); moveSuggestion(-1); }
   else if (e.key === "Enter" && suggestionIndex >= 0) {
     e.preventDefault();
-    const items = Array.from(els.suggestions.querySelectorAll("li"));
-    if (items[suggestionIndex]) {
-      els.cardInput.value = items[suggestionIndex].dataset.no;
+    const list = Array.from(els.suggestions.querySelectorAll("li"));
+    if (list[suggestionIndex]) {
+      const no = list[suggestionIndex].dataset.no;
+      els.cardNo.value = no;
       els.suggestions.classList.add("hidden");
-      previewCard(els.cardInput.value);
+      const existing = items.get(normalizeKey(no));
+      if (existing) {
+        els.cardName.value = existing.name || "";
+        els.cardGrade.value = existing.grade || "";
+        els.cardState.value = existing.state == null ? "" : String(existing.state);
+        els.cardValue.value = existing.value || "";
+      }
+      els.cardQty.focus();
     }
   } else if (e.key === "Escape") {
     els.suggestions.classList.add("hidden");
   }
 });
-els.cardInput.addEventListener("blur", () => {
+els.cardNo.addEventListener("blur", () => {
   setTimeout(() => els.suggestions.classList.add("hidden"), 150);
 });
-els.cardInput.addEventListener("focus", (e) => {
-  if (e.target.value) showSuggestions(e.target.value);
-});
-
 els.suggestions.addEventListener("mousedown", (e) => {
   const li = e.target.closest("li");
   if (!li) return;
   e.preventDefault();
-  els.cardInput.value = li.dataset.no;
+  const no = li.dataset.no;
+  els.cardNo.value = no;
   els.suggestions.classList.add("hidden");
-  previewCard(li.dataset.no);
-  els.qtyInput.focus();
+  const existing = items.get(normalizeKey(no));
+  if (existing) {
+    els.cardName.value = existing.name || "";
+    els.cardGrade.value = existing.grade || "";
+    els.cardValue.value = existing.value || "";
+  }
+  els.cardQty.focus();
 });
 
-els.collectionBody.addEventListener("click", async (e) => {
-  const inc = e.target.closest("[data-inc]");
-  const dec = e.target.closest("[data-dec]");
-  const rm = e.target.closest("[data-remove]");
-  if (inc) await addCardByNo(inc.dataset.inc, 1);
-  else if (dec) await addCardByNo(dec.dataset.dec, -1);
-  else if (rm) await removeCard(rm.dataset.remove);
-});
-els.collectionBody.addEventListener("change", async (e) => {
-  const input = e.target.closest(".qty-input");
-  if (!input) return;
-  await setQty(input.dataset.key, input.value);
+els.inventoryBody.addEventListener("click", async (e) => {
+  const tr = e.target.closest("tr[data-key]");
+  if (!tr) return;
+  const key = tr.dataset.key;
+
+  // Image actions: view available to everyone, upload/delete admin only
+  const imgAct = e.target.closest("[data-img-action]");
+  if (imgAct) {
+    e.stopPropagation();
+    const action = imgAct.dataset.imgAction;
+    if (action === "view") {
+      const entry = items.get(normalizeKey(key));
+      if (entry && entry.imageUrl) openLightbox(entry.imageUrl);
+      return;
+    }
+    if (!isOwner(currentUser)) return;
+    if (action === "upload") {
+      currentUploadKey = key;
+      els.imageInput.value = "";
+      els.imageInput.click();
+    } else if (action === "delete") {
+      await deleteCardImage(key);
+    }
+    return;
+  }
+
+  if (!isOwner(currentUser)) return;
+  const dBtn = e.target.closest("[data-discount-btn]");
+  if (dBtn) {
+    openDiscountModal(key);
+    return;
+  }
+  const actBtn = e.target.closest("[data-act]");
+  if (actBtn) {
+    const act = actBtn.dataset.act;
+    if (act === "inc") await adjustQty(key, 1);
+    else if (act === "dec") await adjustQty(key, -1);
+    else if (act === "remove") {
+      if (confirm("이 카드를 목록에서 삭제할까요?")) await removeCard(key);
+    }
+    return;
+  }
+  const editEl = e.target.closest(".cell-edit");
+  if (editEl && !editEl.isContentEditable) {
+    startInlineEdit(editEl, tr, "name");
+  }
 });
 
-els.catalogBody.addEventListener("click", async (e) => {
-  const btn = e.target.closest("[data-add]");
-  if (!btn) return;
-  await addCardByNo(btn.dataset.add, 1);
-  showToast(`추가됨: ${btn.dataset.add}`, "success");
+els.inventoryBody.addEventListener("keydown", (e) => {
+  if (!isOwner(currentUser)) return;
+  const editEl = e.target.closest(".cell-edit");
+  if (editEl && (e.key === "Enter" || e.key === " ")) {
+    e.preventDefault();
+    const tr = editEl.closest("tr[data-key]");
+    if (tr) startInlineEdit(editEl, tr, "name");
+  }
 });
 
-els.collectionSearch.addEventListener("input", renderCollection);
-els.catalogSearch.addEventListener("input", renderCatalog);
-els.exportBtn.addEventListener("click", exportCollectionCSV);
-els.collectionClear.addEventListener("click", async () => {
-  if (collection.size === 0) return;
-  if (!confirm("보유 카드 목록을 모두 비울까요?")) return;
-  collection = new Map();
-  renderCollection();
-  await saveCollection();
+function startInlineEdit(span, tr, field) {
+  const key = tr.dataset.key;
+  const entry = items.get(normalizeKey(key));
+  const current = entry ? (entry[field] || "") : "";
+  span.contentEditable = "true";
+  span.classList.add("editing");
+  span.textContent = current;
+  const range = document.createRange();
+  range.selectNodeContents(span);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  span.focus();
+
+  const finish = async (commit) => {
+    span.removeEventListener("blur", onBlur);
+    span.removeEventListener("keydown", onKey);
+    span.contentEditable = "false";
+    span.classList.remove("editing");
+    if (commit) {
+      const v = span.textContent.trim();
+      await updateField(key, field, v);
+    } else {
+      renderAll();
+    }
+  };
+  const onBlur = () => finish(true);
+  const onKey = (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); finish(true); }
+    else if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
+  };
+  span.addEventListener("blur", onBlur);
+  span.addEventListener("keydown", onKey);
+}
+
+els.inventoryBody.addEventListener("change", async (e) => {
+  if (!isOwner(currentUser)) return;
+  const tr = e.target.closest("tr[data-key]");
+  if (!tr) return;
+  const key = tr.dataset.key;
+  const target = e.target;
+  if (target.matches(".state-input")) {
+    await updateField(key, "state", target.value);
+  } else if (target.matches(".value-input")) {
+    await updateField(key, "value", target.value);
+  } else if (target.matches(".qty-input")) {
+    await updateField(key, "qty", target.value);
+  }
 });
 
-window.addEventListener("online", () => {
-  if (pendingSaves === 0) setSyncStatus("synced");
+els.inventoryTable.querySelectorAll("th.sortable").forEach((th) => {
+  th.addEventListener("click", () => {
+    const k = th.dataset.sort;
+    if (sortKey === k) sortDir = -sortDir;
+    else { sortKey = k; sortDir = 1; }
+    renderInventory();
+  });
 });
+
+if (els.cardGrid) {
+  els.cardGrid.addEventListener("click", (e) => {
+    const cartBtn = e.target.closest("[data-cart-act='add']");
+    if (cartBtn) {
+      e.stopPropagation();
+      addToCart(cartBtn.dataset.key, 1);
+      return;
+    }
+    const card = e.target.closest(".market-card[data-key]");
+    if (!card) return;
+    const entry = items.get(normalizeKey(card.dataset.key));
+    if (entry && entry.imageUrl) openLightbox(entry.imageUrl);
+  });
+}
+
+// Cart drawer interactions
+if (els.cartFab) els.cartFab.addEventListener("click", openCartDrawer);
+if (els.cartDrawerClose) els.cartDrawerClose.addEventListener("click", closeCartDrawer);
+if (els.cartBackdrop) els.cartBackdrop.addEventListener("click", closeCartDrawer);
+if (els.cartClear) els.cartClear.addEventListener("click", () => {
+  if (cartCount() === 0) return;
+  if (confirm("장바구니를 비울까요?")) clearCart();
+});
+if (els.cartSubmit) els.cartSubmit.addEventListener("click", submitPurchaseRequest);
+if (els.cartDrawerBody) {
+  els.cartDrawerBody.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-cart-act]");
+    if (!btn) return;
+    const key = btn.dataset.key;
+    const act = btn.dataset.cartAct;
+    if (act === "inc") addToCart(key, 1);
+    else if (act === "dec") addToCart(key, -1);
+    else if (act === "remove") removeFromCart(key);
+  });
+  els.cartDrawerBody.addEventListener("change", (e) => {
+    const input = e.target.closest(".cart-qty-input");
+    if (!input) return;
+    setCartQty(input.dataset.key, input.value);
+  });
+}
+
+// Code modal
+if (els.codeClose) els.codeClose.addEventListener("click", closeCodeModal);
+if (els.codeModalBackdrop) els.codeModalBackdrop.addEventListener("click", closeCodeModal);
+if (els.codeCopy) els.codeCopy.addEventListener("click", async () => {
+  const code = els.codeDisplay.textContent.trim();
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast("코드가 복사되었습니다.", "success");
+  } catch (e) {
+    showToast("복사 실패. 직접 선택해 주세요.", "error");
+  }
+});
+
+// Admin: request lookup
+if (els.requestForm) {
+  els.requestForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    lookupRequest(els.requestCodeInput.value);
+  });
+}
+if (els.requestCodeInput) {
+  els.requestCodeInput.addEventListener("input", (e) => {
+    e.target.value = e.target.value.toUpperCase();
+  });
+}
+
+if (els.sortSelect) {
+  els.sortSelect.addEventListener("change", () => {
+    const v = els.sortSelect.value;
+    const [k, d] = v.split("|");
+    sortKey = k;
+    sortDir = parseInt(d, 10) || 1;
+    renderInventory();
+  });
+}
+
+els.gradeFilter.addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  activeState = chip.dataset.state || "";
+  renderAll();
+});
+
+els.inventorySearch.addEventListener("input", renderInventory);
+els.exportBtn.addEventListener("click", exportCSV);
+if (els.imagesClearBtn) {
+  els.imagesClearBtn.addEventListener("click", bulkRemoveImages);
+}
+els.inventoryClear.addEventListener("click", async () => {
+  if (!isOwner(currentUser)) return;
+  if (items.size === 0) return;
+  if (!confirm(`전체 인벤토리(${items.size}건)를 삭제할까요? 되돌릴 수 없습니다.`)) return;
+  items = new Map();
+  renderAll();
+  await saveInventory();
+});
+
+els.imageInput.addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  const key = currentUploadKey;
+  currentUploadKey = null;
+  e.target.value = "";
+  if (!file || !key) return;
+  await uploadCardImage(key, file);
+});
+
+els.lightboxBackdrop.addEventListener("click", closeLightbox);
+els.lightboxClose.addEventListener("click", closeLightbox);
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!els.lightbox.hidden) { closeLightbox(); return; }
+  if (els.discountModal && !els.discountModal.hidden) { closeDiscountModal(); return; }
+  if (els.codeModal && !els.codeModal.hidden) { closeCodeModal(); return; }
+  if (els.cartDrawer && !els.cartDrawer.hidden) { closeCartDrawer(); return; }
+});
+
+// Discount modal
+if (els.discountForm) {
+  els.discountForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!currentDiscountKey) return;
+    const percent = parseInt(els.discountPercent.value, 10);
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+      showToast("할인율을 1-100 사이로 입력하세요.", "error");
+      return;
+    }
+    const startsAt = localInputToISO(els.discountStart.value);
+    const endsAt = localInputToISO(els.discountEnd.value);
+    if (startsAt && endsAt && new Date(endsAt) <= new Date(startsAt)) {
+      showToast("종료 일시가 시작 일시보다 늦어야 합니다.", "error");
+      return;
+    }
+    const discount = { percent };
+    // 할인 후 금액이 입력되어 있으면 정확한 값 그대로 저장
+    const finalRaw = els.discountFinal.value;
+    if (finalRaw !== "" && Number.isFinite(Number(finalRaw)) && currentDiscountOriginal > 0) {
+      const fp = Math.max(0, Math.min(currentDiscountOriginal, parseInt0(finalRaw)));
+      discount.finalPrice = fp;
+    }
+    if (startsAt) discount.startsAt = startsAt;
+    if (endsAt) discount.endsAt = endsAt;
+    const key = currentDiscountKey;
+    closeDiscountModal();
+    await persistDiscount(key, discount);
+    showToast(`${percent}% 할인이 저장되었습니다.`, "success");
+  });
+}
+if (els.discountRemove) {
+  els.discountRemove.addEventListener("click", async () => {
+    if (!currentDiscountKey) return;
+    if (!confirm("이 카드의 할인을 제거할까요?")) return;
+    const key = currentDiscountKey;
+    closeDiscountModal();
+    await persistDiscount(key, null);
+    showToast("할인이 제거되었습니다.", "success");
+  });
+}
+if (els.discountCancel) els.discountCancel.addEventListener("click", closeDiscountModal);
+if (els.discountModalBackdrop) els.discountModalBackdrop.addEventListener("click", closeDiscountModal);
+
+// 할인율 ↔ 할인 후 금액 양방향 동기화
+if (els.discountPercent) {
+  els.discountPercent.addEventListener("input", () => {
+    if (discountSyncing) return;
+    if (currentDiscountOriginal <= 0) return;
+    const p = parseFloat(els.discountPercent.value);
+    if (!Number.isFinite(p)) { els.discountFinal.value = ""; return; }
+    discountSyncing = true;
+    els.discountFinal.value = Math.max(0, Math.round((currentDiscountOriginal * (100 - p)) / 100));
+    discountSyncing = false;
+  });
+}
+if (els.discountFinal) {
+  els.discountFinal.addEventListener("input", () => {
+    if (discountSyncing) return;
+    if (currentDiscountOriginal <= 0) return;
+    const f = parseFloat(els.discountFinal.value);
+    if (!Number.isFinite(f)) { els.discountPercent.value = ""; return; }
+    const clamped = Math.max(0, Math.min(currentDiscountOriginal, f));
+    const p = Math.round(((currentDiscountOriginal - clamped) / currentDiscountOriginal) * 100);
+    discountSyncing = true;
+    els.discountPercent.value = Math.max(0, Math.min(100, p));
+    discountSyncing = false;
+  });
+}
+
+// Image auto-format toggle
+if (els.imageFormatOn) {
+  els.imageFormatOn.checked = imageAutoFormat;
+  els.imageFormatOn.addEventListener("change", (e) => {
+    imageAutoFormat = !!e.target.checked;
+    try { localStorage.setItem("pokemon_image_auto_format", imageAutoFormat ? "1" : "0"); } catch (err) {}
+    showToast(
+      imageAutoFormat
+        ? "사진 업로드 시 자동 정렬이 켜졌습니다."
+        : "사진 업로드 시 자동 정렬이 꺼졌습니다.",
+      "success",
+    );
+  });
+}
+
+// Sets (확장팩 라벨)
+if (els.setsForm) {
+  els.setsForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!isOwner(currentUser)) return;
+    await upsertSet(els.setPrefix.value, els.setName.value);
+    els.setPrefix.value = "";
+    els.setName.value = "";
+    els.setPrefix.focus();
+  });
+}
+if (els.setsList) {
+  els.setsList.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-set-remove]");
+    if (!btn) return;
+    removeSet(btn.dataset.setRemove);
+  });
+}
+
+// Hidden admin login: 3연속 클릭 on PokeStock 로고
+const brandBtn = $("brand-btn");
+let brandClicks = [];
+if (brandBtn) {
+  brandBtn.addEventListener("click", () => {
+    if (currentUser) return;
+    const now = Date.now();
+    brandClicks = brandClicks.filter((t) => now - t < 1500);
+    brandClicks.push(now);
+    if (brandClicks.length >= 3) {
+      brandClicks = [];
+      handleLogin();
+    }
+  });
+}
+
+window.addEventListener("online", refreshSyncStatus);
 window.addEventListener("offline", () => setSyncStatus("offline"));
 
 // ---------- Auth bootstrap ----------
 setSyncStatus("connecting");
+renderAuthArea();
+applyOwnerMode();
+
+// signInWithRedirect 후 페이지 복귀 처리
+getRedirectResult(auth)
+  .then((result) => {
+    console.log("[auth] redirect result:", result);
+    if (result && result.user) {
+      // onAuthStateChanged가 별도로 토스트 표시함
+    }
+  })
+  .catch((err) => {
+    console.error("redirect result error", err);
+    showToast(`redirect 로그인 실패: ${err.code || err.message || err}`, "error");
+  });
+
+let lastLoggedInUid = null;
 onAuthStateChanged(auth, (user) => {
-  if (user) {
-    userId = user.uid;
-    setSyncStatus(navigator.onLine ? "synced" : "offline");
-    attachListeners(user.uid);
-  } else {
-    setSyncStatus("connecting", "로그인 중…");
-    signInAnonymously(auth).catch((err) => {
-      console.error("anonymous sign-in failed", err);
-      setSyncStatus("error", "로그인 실패");
-      showToast(
-        "Firebase 인증에 실패했습니다. 콘솔에서 익명 로그인을 활성화했는지 확인하세요.",
-        "error",
-      );
-    });
+  console.log("[auth] state:", user ? `${user.email} (uid=${user.uid})` : "logged out", "isOwner:", isOwner(user));
+  if (user && user.uid !== lastLoggedInUid) {
+    lastLoggedInUid = user.uid;
+    if (isOwner(user)) {
+      showToast(`관리자 로그인됨: ${user.email}`, "success");
+    } else {
+      showToast(`로그인됨: ${user.email} — 관리자 이메일이 아닙니다.`, "error");
+    }
+  } else if (!user && lastLoggedInUid) {
+    lastLoggedInUid = null;
+  }
+  currentUser = user || null;
+  applyOwnerMode();
+  refreshSyncStatus();
+  // Re-attach listener (rules differ for authenticated vs anonymous reads,
+  // and we want to re-trigger migration on first owner login).
+  attachInventoryListener();
+  if (user && isOwner(user) && initialLoaded && items.size === 0) {
+    migrationAttempted = false;
+    maybeMigrate();
   }
 });
 
-// Initial render of empty state
-updateDataStatus();
-renderCatalog();
-renderCollection();
+// Initial public read attempt even before auth state resolves.
+attachInventoryListener();
+attachSetsListener();
+renderAll();
+renderCart();
+renderSets();
