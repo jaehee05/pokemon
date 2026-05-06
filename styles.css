@@ -914,22 +914,7 @@ select.state-input.st-none { background-color: transparent; color: var(--muted);
   transition: transform 200ms;
 }
 .condition-guide[open] summary::after { transform: rotate(180deg); }
-.condition-tag {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 999px;
-  font-size: 11.5px;
-  font-weight: 700;
-  background: var(--surface-2);
-  color: var(--text-soft);
-  margin-left: 4px;
-}
-.condition-tag:nth-of-type(1) { background: #d3f0dd; color: #16723e; }
-.condition-tag:nth-of-type(2) { background: #d4e7ff; color: #1455a8; }
-.condition-tag:nth-of-type(3) { background: #fde7b8; color: #8a5b07; }
+.condition-guide summary .state-badge { margin-left: 4px; }
 .condition-guide-body {
   padding-top: 14px;
   color: var(--text-soft);
