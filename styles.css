@@ -1873,11 +1873,32 @@ body.modal-open { overflow: hidden; }
 }
 
 /* 매우 좁은 화면: 관리자 폼 항목들 모두 한 줄씩 (iOS 클리핑 방지) */
-@media (max-width: 480px) {
+@media (max-width: 720px) {
+  .add-form,
+  .sets-form {
+    display: block;
+  }
   .add-form > *,
   .sets-form > * {
-    flex: 1 1 100%;
-    max-width: none;
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: none !important;
+    margin-bottom: 8px;
+    box-sizing: border-box;
+  }
+  .add-form > *:last-child,
+  .sets-form > *:last-child {
+    margin-bottom: 0;
+  }
+  .add-form input,
+  .add-form select,
+  .add-form button,
+  .sets-form input,
+  .sets-form button {
+    width: 100% !important;
+    max-width: 100% !important;
+    box-sizing: border-box;
   }
 }
 
