@@ -50,6 +50,21 @@
       <div class="stat-grades" id="stat-grades"></div>
     </section>
 
+    <section class="panel" id="sets-panel" data-owner-only>
+      <div class="panel-header">
+        <div>
+          <h2>확장팩 라벨</h2>
+          <p class="panel-sub">일련번호 접두어에 한글 이름을 매핑하면 카드마다 작은 칩으로 표시됩니다. 예: <code>sv10</code> → <code>로켓단의 영광</code></p>
+        </div>
+      </div>
+      <form id="sets-form" class="sets-form" autocomplete="off">
+        <input type="text" id="set-prefix" placeholder="접두어 (예: sv10)" spellcheck="false" required />
+        <input type="text" id="set-name" placeholder="이름 (예: 로켓단의 영광)" required />
+        <button class="btn btn-primary" type="submit">저장</button>
+      </form>
+      <div class="sets-list" id="sets-list"></div>
+    </section>
+
     <section class="panel" id="add-panel" data-owner-only>
       <div class="panel-header">
         <div>

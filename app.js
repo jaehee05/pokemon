@@ -22,8 +22,11 @@ import {
 let currentUser = null;
 // items: key -> { no, name, grade, value, qty }
 let items = new Map();
+// sets: prefix -> name (예: "sv10" -> "로켓단의 영광")
+let sets = new Map();
 
 let inventoryUnsub = null;
+let setsUnsub = null;
 let initialLoaded = false;
 let migrationAttempted = false;
 
@@ -109,6 +112,11 @@ const els = {
   requestForm: $("request-form"),
   requestCodeInput: $("request-code-input"),
   requestResult: $("request-result"),
+
+  setsForm: $("sets-form"),
+  setPrefix: $("set-prefix"),
+  setName: $("set-name"),
+  setsList: $("sets-list"),
 };
 
 let currentUploadKey = null;
@@ -732,7 +740,7 @@ function renderInventory() {
       const thumbCell = thumbCellHTML(r, true);
       tr.innerHTML = `
         <td class="thumb-cell">${thumbCell}</td>
-        <td class="mono">${escapeHTML(r.no)}</td>
+        <td class="mono no-cell">${setChipHTML(r.no)}<span class="no-text">${escapeHTML(r.no)}</span></td>
         <td><span class="cell-edit" data-field="name" tabindex="0">${escapeHTML(r.name || "")}<span class="cell-empty">${r.name ? "" : "이름 없음"}</span></span></td>
         <td><input type="number" class="state-input ${stateClass(r.state)}" data-field="state" min="0" max="10" step="1" value="${r.state == null ? "" : r.state}" placeholder="—" aria-label="상태 (0-10점)" /></td>
         <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가격" /></td>
@@ -819,7 +827,7 @@ function renderBuyerCards(filtered) {
     card.innerHTML = `
       ${imageBlock}
       <div class="market-card-body">
-        <span class="market-card-no">${escapeHTML(r.no)}</span>
+        <span class="market-card-no">${setChipHTML(r.no)}<span>${escapeHTML(r.no)}</span></span>
         <h3 class="market-card-title">${escapeHTML(r.name || "이름 미등록")}</h3>
         <div class="market-card-bottom">
           <span class="market-card-price">${formatWon(r.value || 0)}</span>
@@ -968,6 +976,106 @@ function closeLightbox() {
   document.body.classList.remove("lightbox-open");
 }
 
+// ---------- Sets (확장팩 라벨) ----------
+function getSetPrefix(no) {
+  if (!no) return "";
+  const s = String(no).split(/[-\s_]/)[0];
+  return s ? s.toLowerCase() : "";
+}
+function getSetName(no) {
+  const p = getSetPrefix(no);
+  return p ? (sets.get(p) || "") : "";
+}
+function setChipHTML(no) {
+  const name = getSetName(no);
+  return name ? `<span class="set-chip">${escapeHTML(name)}</span>` : "";
+}
+
+function setsDocRef() { return doc(db, "public", "sets"); }
+
+function attachSetsListener() {
+  if (setsUnsub) setsUnsub();
+  setsUnsub = onSnapshot(
+    setsDocRef(),
+    (snap) => {
+      const data = snap.exists() ? snap.data() : null;
+      const obj = (data && data.items) || {};
+      sets = new Map(Object.entries(obj));
+      renderSets();
+      renderInventory();
+    },
+    (err) => {
+      console.warn("sets snapshot error", err);
+    },
+  );
+}
+
+async function saveSets() {
+  if (!isOwner(currentUser)) return;
+  const obj = {};
+  for (const [k, v] of sets) obj[k] = v;
+  beginSaving();
+  try {
+    await setDoc(setsDocRef(), {
+      items: obj,
+      updatedAt: serverTimestamp(),
+      updatedBy: currentUser?.email || null,
+    });
+  } catch (e) {
+    console.error("saveSets failed", e);
+    showToast("라벨 저장 실패: " + (e.message || e), "error");
+  } finally {
+    endSaving();
+  }
+}
+
+async function upsertSet(prefix, name) {
+  if (!isOwner(currentUser)) return;
+  const p = String(prefix || "").trim().toLowerCase();
+  const n = String(name || "").trim();
+  if (!p || !n) {
+    showToast("접두어와 이름을 모두 입력하세요.", "error");
+    return;
+  }
+  sets.set(p, n);
+  renderSets();
+  renderInventory();
+  await saveSets();
+  showToast(`라벨 저장: ${p} → ${n}`, "success");
+}
+
+async function removeSet(prefix) {
+  if (!isOwner(currentUser)) return;
+  const p = String(prefix || "").trim().toLowerCase();
+  if (!sets.has(p)) return;
+  if (!confirm(`'${p}' 라벨을 삭제할까요?`)) return;
+  sets.delete(p);
+  renderSets();
+  renderInventory();
+  await saveSets();
+}
+
+function renderSets() {
+  const list = els.setsList;
+  if (!list) return;
+  list.innerHTML = "";
+  if (sets.size === 0) {
+    list.innerHTML = `<p class="empty sets-empty">등록된 라벨이 없습니다.</p>`;
+    return;
+  }
+  const sorted = Array.from(sets.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  for (const [prefix, name] of sorted) {
+    const item = document.createElement("div");
+    item.className = "set-item";
+    item.innerHTML = `
+      <span class="set-chip">${escapeHTML(name)}</span>
+      <span class="set-item-prefix">${escapeHTML(prefix)}</span>
+      <button class="icon-btn danger" data-set-remove="${escapeAttr(prefix)}" type="button" aria-label="삭제">×</button>
+    `;
+    list.appendChild(item);
+  }
+}
+
 // ---------- Cart ----------
 function persistCart() {
   try { localStorage.setItem("pokemon_cart_v1", JSON.stringify(cart)); } catch (e) {}
@@ -999,7 +1107,7 @@ function addToCart(key, delta = 1) {
   else cart[k] = next;
   persistCart();
   renderCart();
-  renderInventory();
+  updateCardAddButton(k);
 }
 function setCartQty(key, qty) {
   const k = normalizeKey(key);
@@ -1011,19 +1119,45 @@ function setCartQty(key, qty) {
   else cart[k] = n;
   persistCart();
   renderCart();
-  renderInventory();
+  updateCardAddButton(k);
 }
 function removeFromCart(key) {
-  delete cart[normalizeKey(key)];
+  const k = normalizeKey(key);
+  delete cart[k];
   persistCart();
   renderCart();
-  renderInventory();
+  updateCardAddButton(k);
 }
 function clearCart() {
+  const keys = Object.keys(cart);
   cart = {};
   persistCart();
   renderCart();
-  renderInventory();
+  for (const k of keys) updateCardAddButton(k);
+}
+
+function updateCardAddButton(key) {
+  if (!els.cardGrid) return;
+  const k = normalizeKey(key);
+  const selector = `.market-card[data-key="${CSS && CSS.escape ? CSS.escape(k) : k}"]`;
+  const card = els.cardGrid.querySelector(selector);
+  if (!card) return;
+  const oldBtn = card.querySelector(".market-card-add");
+  if (!oldBtn) return;
+  const item = items.get(k);
+  if (!item) return;
+  const stock = Math.max(0, parseInt0(item.qty));
+  const cartQty = getCartQty(k);
+  let html;
+  if (stock <= 0) {
+    html = `<button class="market-card-add" type="button" disabled>품절</button>`;
+  } else if (cartQty > 0) {
+    const cartFull = cartQty >= stock;
+    html = `<button class="market-card-add added" type="button" data-cart-act="add" data-key="${escapeAttr(k)}" ${cartFull ? "disabled" : ""}>담김 (${cartQty})</button>`;
+  } else {
+    html = `<button class="market-card-add" type="button" data-cart-act="add" data-key="${escapeAttr(k)}">담기</button>`;
+  }
+  oldBtn.outerHTML = html;
 }
 
 function renderCart() {
@@ -1863,6 +1997,25 @@ window.addEventListener("keydown", (e) => {
   if (els.cartDrawer && !els.cartDrawer.hidden) { closeCartDrawer(); return; }
 });
 
+// Sets (확장팩 라벨)
+if (els.setsForm) {
+  els.setsForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!isOwner(currentUser)) return;
+    await upsertSet(els.setPrefix.value, els.setName.value);
+    els.setPrefix.value = "";
+    els.setName.value = "";
+    els.setPrefix.focus();
+  });
+}
+if (els.setsList) {
+  els.setsList.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-set-remove]");
+    if (!btn) return;
+    removeSet(btn.dataset.setRemove);
+  });
+}
+
 // Hidden admin login: 3연속 클릭 on PokeStock 로고
 const brandBtn = $("brand-btn");
 let brandClicks = [];
@@ -1902,5 +2055,7 @@ onAuthStateChanged(auth, (user) => {
 
 // Initial public read attempt even before auth state resolves.
 attachInventoryListener();
+attachSetsListener();
 renderAll();
 renderCart();
+renderSets();
