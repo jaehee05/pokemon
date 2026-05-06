@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>포켓몬 카드 가격 계산기</title>
-<meta name="description" content="포켓몬 카드 일련번호로 보유 카드를 등록하고 총액을 계산하는 도구." />
+<title>포켓몬 카드 인벤토리</title>
+<meta name="description" content="포켓몬 카드의 일련번호, 등급, 가치, 보유 수량을 한 화면에서 관리하는 인벤토리 도구." />
 <link rel="preconnect" href="https://www.gstatic.com" crossorigin />
 <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin />
 <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin />
@@ -14,150 +14,302 @@
   <header class="hero">
     <div class="hero-inner">
       <div class="hero-text">
-        <div class="brand">
+        <button class="brand" id="brand-btn" type="button" aria-label="PokeStock">
           <span class="logo-dot"></span>
-          <span class="brand-name">PokeCalc</span>
-        </div>
-        <h1>포켓몬 카드 가격 계산기</h1>
+          <span class="brand-name">PokeStock</span>
+        </button>
+        <h1>포켓몬 카드 인벤토리</h1>
         <p class="subtitle">
-          스프레드시트로 가격을 등록하고, 일련번호로 보유 카드를 추가해 총액을 한눈에 확인하세요.
+          보유 중인 포켓몬 카드의 가격과 재고를 한눈에 확인하세요.
         </p>
       </div>
-      <div class="sync-badge" id="sync-badge" data-state="connecting" title="동기화 상태">
-        <span class="sync-dot"></span>
-        <span class="sync-text">연결 중…</span>
+      <div class="hero-actions">
+        <div class="sync-badge" id="sync-badge" data-state="connecting" title="동기화 상태" data-owner-only>
+          <span class="sync-dot"></span>
+          <span class="sync-text">연결 중…</span>
+        </div>
+        <div class="auth-area" id="auth-area"></div>
       </div>
     </div>
   </header>
 
   <main>
-    <section class="panel" id="data-panel">
-      <div class="panel-header">
-        <div>
-          <h2>1. 가격 데이터</h2>
-          <p class="panel-sub">스프레드시트의 가격표를 등록합니다.</p>
-        </div>
-        <span class="data-status" id="data-status">데이터 없음</span>
+    <section class="stats" id="stats">
+      <div class="stat">
+        <span class="stat-label">총 종류</span>
+        <span class="stat-value" id="stat-types">0</span>
       </div>
-
-      <div class="data-actions">
-        <label class="btn">
-          <span>CSV 파일 업로드</span>
-          <input type="file" id="csv-file" accept=".csv,.tsv,.txt" hidden />
-        </label>
-        <button class="btn" id="paste-toggle" type="button">스프레드시트 붙여넣기</button>
-        <button class="btn btn-ghost" id="sample-load" type="button">샘플 데이터</button>
-        <button class="btn btn-danger" id="data-clear" type="button">데이터 삭제</button>
+      <div class="stat">
+        <span class="stat-label">총 수량</span>
+        <span class="stat-value" id="stat-qty">0</span>
       </div>
-
-      <div class="paste-area hidden" id="paste-area">
-        <p class="hint">구글 스프레드시트에서 헤더(<code>순번 / 번호 / 카드 이름 / 가격</code>)를 포함해 복사한 뒤 아래에 붙여넣으세요.</p>
-        <textarea id="paste-input" rows="8" placeholder="순번&#9;번호&#9;카드 이름&#9;가격(원)&#10;1&#9;sv10 001&#9;피콘&#9;300&#10;..."></textarea>
-        <div class="row-end">
-          <button class="btn btn-primary" id="paste-apply" type="button">적용</button>
-        </div>
+      <div class="stat stat-primary" data-owner-only>
+        <span class="stat-label">총 가치</span>
+        <span class="stat-value" id="stat-value">₩0</span>
       </div>
+      <div class="stat-grades" id="stat-grades"></div>
     </section>
 
-    <section class="panel" id="add-panel">
+    <section class="panel" id="sets-panel" data-owner-only>
       <div class="panel-header">
         <div>
-          <h2>2. 카드 추가</h2>
-          <p class="panel-sub">예: <code>SV10 075</code> — 대소문자/공백은 무시됩니다.</p>
+          <h2>확장팩 라벨</h2>
+          <p class="panel-sub">일련번호 접두어에 한글 이름을 매핑하면 카드마다 작은 칩으로 표시됩니다. 예: <code>sv10</code> → <code>로켓단의 영광</code></p>
+        </div>
+      </div>
+      <form id="sets-form" class="sets-form" autocomplete="off">
+        <input type="text" id="set-prefix" placeholder="접두어 (예: sv10)" spellcheck="false" required />
+        <input type="text" id="set-name" placeholder="이름 (예: 로켓단의 영광)" required />
+        <button class="btn btn-primary" type="submit">저장</button>
+      </form>
+      <div class="sets-list" id="sets-list"></div>
+    </section>
+
+    <section class="panel" id="add-panel" data-owner-only>
+      <div class="panel-header">
+        <div>
+          <h2>카드 추가 / 수정</h2>
+          <p class="panel-sub">같은 일련번호로 추가하면 수량이 합산됩니다. 빈 필드는 자동으로 채워집니다.</p>
         </div>
       </div>
       <form id="add-form" class="add-form" autocomplete="off">
         <div class="add-input-wrap">
           <input
             type="text"
-            id="card-input"
-            placeholder="일련번호 입력 (예: SV10 075)"
+            id="card-no"
+            placeholder="일련번호 (예: sv10-032)"
             autocomplete="off"
             spellcheck="false"
+            required
           />
           <ul class="suggestions hidden" id="suggestions"></ul>
         </div>
-        <input type="number" id="qty-input" min="1" step="1" value="1" aria-label="수량" />
+        <input type="text" id="card-name" placeholder="카드명" autocomplete="off" />
+        <select id="card-grade" aria-label="등급">
+          <option value="">등급</option>
+          <option value="RR">RR</option>
+          <option value="R">R</option>
+          <option value="U">U</option>
+          <option value="AR">AR</option>
+          <option value="C">C</option>
+          <option value="SR">SR</option>
+          <option value="SAR">SAR</option>
+          <option value="UR">UR</option>
+        </select>
+        <select id="card-state" aria-label="컨디션 등급">
+          <option value="">상태</option>
+          <option value="S" selected>S</option>
+          <option value="A">A</option>
+          <option value="B">B</option>
+        </select>
+        <input type="number" id="card-value" min="0" step="50" placeholder="가치(원)" />
+        <input type="number" id="card-qty" min="1" step="1" value="1" aria-label="수량" />
         <button class="btn btn-primary" type="submit">추가</button>
       </form>
       <p class="card-preview" id="card-preview"></p>
+      <label class="format-toggle" for="image-format-on">
+        <input type="checkbox" id="image-format-on" />
+        <span class="format-toggle-text">사진 업로드 시 자동 정렬 <small>흰 배경 1:1 캔버스에 카드를 가운데 정렬해 저장</small></span>
+      </label>
     </section>
 
-    <section class="panel" id="collection-panel">
+    <details class="condition-guide usage-guide" open>
+      <summary>🛒 이용 안내</summary>
+      <div class="condition-guide-body">
+        <p>이 페이지는 판매 중인 카드를 보여드리는 <strong>카탈로그</strong>입니다. 일일이 카드명을 말씀하지 않아도 <strong>코드 하나로 편하게 요청</strong>하실 수 있도록 만들었어요.</p>
+        <p class="usage-subhead">이용 방법</p>
+        <ol class="usage-steps">
+          <li>마음에 드는 카드를 <strong>장바구니에 담아주세요</strong></li>
+          <li>"구매 요청 보내기"로 받은 <strong>5자리 코드</strong>를 채팅으로 전달해주세요</li>
+          <li>가격 협의·결제·배송은 <strong>당근 등 플랫폼 안에서만</strong> 진행됩니다 (직거래도 가능합니다)</li>
+        </ol>
+        <p class="condition-note">※ 안전을 위해 이 사이트에서는 <strong>결제나 개인정보 입력을 받지 않습니다.</strong></p>
+      </div>
+    </details>
+
+    <details class="condition-guide">
+      <summary>📖 컨디션 등급 안내 <span class="state-badge st-s">S</span><span class="state-badge st-a">A</span><span class="state-badge st-b">B</span></summary>
+      <div class="condition-guide-body">
+        <p>카드 등급은 <strong>외관 컨디션</strong>만을 기준으로 분류합니다.</p>
+        <ul class="condition-list">
+          <li><span class="state-badge st-s">S</span> 개봉 직후 바로 슬리브/탑로더 보관된 <strong>최상급</strong> 컨디션</li>
+          <li><span class="state-badge st-a">A</span> 육안으로 미세 흠집이 보일 수 있는 <strong>양호한</strong> 컨디션</li>
+          <li><span class="state-badge st-b">B</span> 스크래치, 찍힘 등 <strong>사용감이 뚜렷한</strong> 컨디션</li>
+        </ul>
+        <p class="condition-note">공장 인쇄 과정에서 발생할 수 있는 센터링(여백 차이), 점박이, 인쇄 번짐, 컷팅 흔적 등은 제조 특성상 등급 판정에 포함되지 않습니다.</p>
+        <p class="condition-note">📸 모든 카드는 실제 사진을 기반으로 판매되며, 구매 전 꼭 사진을 확인해 주세요.</p>
+        <p class="condition-note">⚠️ 제조상의 특성이나 미세한 인쇄 차이로 인한 교환·환불은 어려운 점 양해 부탁드립니다.</p>
+      </div>
+    </details>
+
+    <section class="panel" id="request-panel" data-owner-only>
       <div class="panel-header">
         <div>
-          <h2>3. 내 카드 목록</h2>
-          <p class="panel-sub">수량을 직접 조정하거나 검색할 수 있습니다.</p>
-        </div>
-        <div class="totals">
-          <span class="totals-count" id="totals-count">0종 / 0장</span>
-          <span class="totals-sum" id="totals-sum">0원</span>
+          <h2>구매 요청 조회</h2>
+          <p class="panel-sub">구매자에게 받은 5자리 코드를 입력해 요청 내용을 확인하고 판매 처리하세요.</p>
         </div>
       </div>
+      <form class="request-lookup" id="request-form" autocomplete="off">
+        <input type="text" id="request-code-input" placeholder="예: AFJ3G" maxlength="10" spellcheck="false" />
+        <button class="btn btn-primary" id="request-lookup-btn" type="submit">조회</button>
+      </form>
+      <div class="request-result" id="request-result"></div>
+    </section>
 
-      <div class="collection-actions">
+    <section class="panel" id="inventory-panel">
+      <div class="panel-header">
+        <div>
+          <h2>카드 목록</h2>
+          <p class="panel-sub" data-owner-only>셀을 클릭하면 바로 수정할 수 있습니다. 컬럼 헤더를 클릭하면 정렬됩니다.</p>
+          <p class="panel-sub" data-buyer-only>검색하거나 등급 칩, 컬럼 헤더로 정렬해 카드를 살펴보세요.</p>
+        </div>
+        <span class="data-status" id="inventory-count">0건</span>
+      </div>
+
+      <div class="filters">
+        <div class="grade-filter" id="grade-filter">
+          <button class="chip active" data-state="">전체</button>
+        </div>
         <input
           type="search"
-          id="collection-search"
-          placeholder="카드 이름 또는 번호로 검색"
+          id="inventory-search"
+          placeholder="일련번호 또는 카드명 검색"
         />
+        <select class="sort-select-buyer" id="sort-select" data-buyer-only aria-label="정렬">
+          <option value="value|-1">가격 높은 순</option>
+          <option value="value|1">가격 낮은 순</option>
+          <option value="state|-1">상태 높은 순</option>
+          <option value="qty|-1">재고 많은 순</option>
+          <option value="no|1">일련번호 순</option>
+        </select>
         <div class="action-spacer"></div>
-        <button class="btn btn-ghost" id="export-btn" type="button">CSV 내보내기</button>
-        <button class="btn btn-danger" id="collection-clear" type="button">목록 비우기</button>
+        <label class="btn" data-owner-only>
+          <span>CSV 가져오기</span>
+          <input type="file" id="csv-file" accept=".csv,.tsv,.txt" hidden />
+        </label>
+        <button class="btn" id="paste-toggle" type="button" data-owner-only>붙여넣기</button>
+        <button class="btn btn-ghost" id="export-btn" type="button" data-owner-only>CSV 내보내기</button>
+        <button class="btn btn-ghost" id="images-clear-btn" type="button" data-owner-only>이미지 일괄 제거</button>
+        <button class="btn btn-danger" id="inventory-clear" type="button" data-owner-only>전체 삭제</button>
       </div>
 
-      <div class="table-wrap">
-        <table id="collection-table">
-          <thead>
-            <tr>
-              <th>번호</th>
-              <th>카드 이름</th>
-              <th class="num">단가</th>
-              <th class="num">수량</th>
-              <th class="num">합계</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="collection-body"></tbody>
-        </table>
-        <p class="empty" id="collection-empty">아직 추가된 카드가 없습니다.</p>
-      </div>
-    </section>
-
-    <section class="panel" id="catalog-panel">
-      <div class="panel-header">
-        <div>
-          <h2>전체 카탈로그</h2>
-          <p class="panel-sub">등록된 가격표에서 카드를 빠르게 추가하세요.</p>
+      <div class="paste-area hidden" id="paste-area" data-owner-only>
+        <p class="hint">스프레드시트에서 헤더(<code>일련번호 / 카드명 / 등급 / 가치 / 보유 수량</code>)를 포함해 복사 후 붙여넣으세요.</p>
+        <textarea id="paste-input" rows="8" placeholder="일련번호&#9;카드명&#9;등급&#9;가치&#9;보유 수량&#10;sv10-032&#9;우락고래ex&#9;RR&#9;2000&#9;1"></textarea>
+        <div class="row-end">
+          <button class="btn" id="paste-cancel" type="button">취소</button>
+          <button class="btn btn-primary" id="paste-apply" type="button">적용</button>
         </div>
-        <span class="data-status" id="catalog-count">0건</span>
       </div>
-      <input
-        type="search"
-        id="catalog-search"
-        placeholder="번호 또는 이름으로 검색"
-      />
-      <div class="table-wrap">
-        <table id="catalog-table">
+
+      <div class="table-wrap" data-owner-only>
+        <table id="inventory-table">
           <thead>
             <tr>
-              <th>번호</th>
-              <th>카드 이름</th>
-              <th class="num">가격</th>
-              <th></th>
+              <th class="th-thumb">사진</th>
+              <th class="sortable" data-sort="no">일련번호 <span class="sort-ind"></span></th>
+              <th class="sortable" data-sort="name">카드명 <span class="sort-ind"></span></th>
+              <th class="sortable" data-sort="state">상태 <span class="sort-ind"></span></th>
+              <th class="sortable num" data-sort="value">가격 <span class="sort-ind"></span></th>
+              <th>할인</th>
+              <th class="sortable num" data-sort="qty">재고 <span class="sort-ind"></span></th>
+              <th class="sortable num" data-sort="total">합계 <span class="sort-ind"></span></th>
+              <th data-owner-only></th>
             </tr>
           </thead>
-          <tbody id="catalog-body"></tbody>
+          <tbody id="inventory-body"></tbody>
         </table>
       </div>
+      <div class="card-grid" id="card-grid" data-buyer-only></div>
+      <p class="empty" id="inventory-empty">아직 등록된 카드가 없습니다.</p>
     </section>
   </main>
 
   <footer>
-    <p>데이터는 Firebase Firestore에 안전하게 저장되며, 오프라인일 때도 사용할 수 있습니다.</p>
+    <p data-owner-only>데이터는 Firebase Firestore에 안전하게 저장되며, 오프라인일 때도 사용할 수 있습니다.</p>
   </footer>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <button class="cart-fab" id="cart-fab" type="button" data-buyer-only hidden aria-label="장바구니 열기">
+    <span class="cart-fab-icon" aria-hidden="true">🛒</span>
+    <span class="cart-fab-label">장바구니</span>
+    <span class="cart-fab-count" id="cart-fab-count">0</span>
+  </button>
+
+  <aside class="cart-drawer" id="cart-drawer" data-buyer-only hidden aria-label="장바구니">
+    <header class="cart-drawer-header">
+      <h2>장바구니</h2>
+      <button class="cart-drawer-close" id="cart-drawer-close" type="button" aria-label="닫기">×</button>
+    </header>
+    <div class="cart-drawer-body" id="cart-drawer-body"></div>
+    <footer class="cart-drawer-footer">
+      <div class="cart-drawer-total">
+        <span>총 <strong id="cart-total-qty">0</strong>장</span>
+        <strong class="cart-drawer-sum" id="cart-total-value">₩0</strong>
+      </div>
+      <div class="cart-drawer-actions">
+        <button class="btn btn-ghost" id="cart-clear" type="button">비우기</button>
+        <button class="btn btn-primary" id="cart-submit" type="button">구매 요청 보내기</button>
+      </div>
+    </footer>
+  </aside>
+  <div class="cart-backdrop" id="cart-backdrop" data-buyer-only hidden></div>
+
+  <div class="discount-modal" id="discount-modal" hidden role="dialog" aria-modal="true" aria-label="할인 설정">
+    <div class="modal-backdrop" id="discount-modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>할인 설정</h2>
+      <p class="modal-sub" id="discount-modal-card"></p>
+      <form id="discount-form">
+        <div class="discount-field-row">
+          <div class="discount-field">
+            <label for="discount-percent">할인율 (%)</label>
+            <input type="number" id="discount-percent" min="1" max="100" step="1" required />
+          </div>
+          <div class="discount-field">
+            <label for="discount-final">할인 후 금액 (원) <small>자동 연동</small></label>
+            <input type="number" id="discount-final" min="0" step="50" />
+          </div>
+        </div>
+        <div class="discount-field">
+          <label for="discount-start">시작 날짜 <small>(해당 날짜 00시부터 적용)</small></label>
+          <input type="date" id="discount-start" />
+        </div>
+        <div class="discount-field">
+          <label for="discount-end">종료 날짜 <small>(해당 날짜 00시에 만료)</small></label>
+          <input type="date" id="discount-end" />
+        </div>
+        <div class="discount-modal-actions">
+          <button type="button" class="btn btn-danger" id="discount-remove">할인 제거</button>
+          <button type="button" class="btn" id="discount-cancel">취소</button>
+          <button type="submit" class="btn btn-primary">저장</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="code-modal" id="code-modal" hidden role="dialog" aria-modal="true" aria-label="구매 요청 코드">
+    <div class="code-modal-backdrop" id="code-modal-backdrop"></div>
+    <div class="code-modal-content">
+      <h2>구매 요청 코드</h2>
+      <p class="code-modal-sub">아래 코드를 판매자에게 전달하세요.<br />코드를 입력하면 판매자가 요청 내용을 확인할 수 있습니다.</p>
+      <div class="code-display" id="code-display"></div>
+      <p class="code-modal-meta" id="code-modal-meta"></p>
+      <div class="code-modal-actions">
+        <button class="btn" id="code-copy" type="button">복사</button>
+        <button class="btn btn-primary" id="code-close" type="button">확인</button>
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="image-input" accept="image/*" hidden />
+
+  <div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="카드 이미지">
+    <div class="lightbox-backdrop" id="lightbox-backdrop"></div>
+    <button class="lightbox-close" id="lightbox-close" type="button" aria-label="닫기">×</button>
+    <img class="lightbox-img" id="lightbox-img" alt="" />
+  </div>
 
   <script type="module" src="./app.js"></script>
 </body>
