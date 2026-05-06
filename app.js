@@ -1444,8 +1444,7 @@ async function completeRequest(code, data) {
       const cur = items.get(k);
       if (!cur) continue;
       const newQty = Math.max(0, parseInt0(cur.qty) - (it.qty || 0));
-      if (newQty === 0) items.delete(k);
-      else items.set(k, { ...cur, qty: newQty });
+      items.set(k, { ...cur, qty: newQty });
     }
     await saveInventory();
     await setDoc(doc(db, "requests", code), {
@@ -1505,11 +1504,7 @@ async function upsertCard({ no, name, grade, state, value, qty }, mode = "merge"
   } else {
     next.qty = incomingQty;
   }
-  if (next.qty <= 0 && mode === "set") {
-    items.delete(key);
-  } else {
-    items.set(key, next);
-  }
+  items.set(key, next);
   renderAll();
   await saveInventory();
   return { ok: true, item: next, wasNew: !existing };
@@ -1526,14 +1521,7 @@ async function updateField(key, field, raw) {
   else if (field === "state") next.state = (raw === "" || raw == null) ? null : normalizeState(raw);
   else if (field === "value") next.value = Math.max(0, parseInt0(raw));
   else if (field === "qty") {
-    const q = Math.max(0, parseInt0(raw));
-    if (q === 0) {
-      items.delete(k);
-      renderAll();
-      await saveInventory();
-      return;
-    }
-    next.qty = q;
+    next.qty = Math.max(0, parseInt0(raw));
   } else return;
   items.set(k, next);
   renderAll();
@@ -1546,8 +1534,7 @@ async function adjustQty(key, delta) {
   const entry = items.get(k);
   if (!entry) return;
   const q = Math.max(0, (parseInt0(entry.qty) || 0) + delta);
-  if (q === 0) items.delete(k);
-  else items.set(k, { ...entry, qty: q });
+  items.set(k, { ...entry, qty: q });
   renderAll();
   await saveInventory();
 }
