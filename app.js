@@ -24,9 +24,12 @@ let currentUser = null;
 let items = new Map();
 // sets: prefix -> name (예: "sv10" -> "로켓단의 영광")
 let sets = new Map();
+// catalog: key -> { no, name, grade, value } (마스터 카탈로그)
+let catalog = new Map();
 
 let inventoryUnsub = null;
 let setsUnsub = null;
+let catalogUnsub = null;
 let initialLoaded = false;
 let migrationAttempted = false;
 
@@ -129,6 +132,9 @@ const els = {
   discountCancel: $("discount-cancel"),
 
   imageFormatOn: $("image-format-on"),
+
+  ocrBtn: $("ocr-btn"),
+  ocrFile: $("ocr-file"),
 };
 
 let currentUploadKey = null;
@@ -402,6 +408,7 @@ async function importFromText(text) {
   }
   items = next;
   await saveInventory();
+  await bulkUpdateCatalog(Array.from(next.values()));
   renderAll();
   showToast(`가져오기 완료: 신규 ${added}건, 업데이트 ${updated}건`, "success");
 }
@@ -1285,6 +1292,177 @@ function renderSets() {
   }
 }
 
+// ---------- Master catalog ----------
+function catalogDocRef() { return doc(db, "public", "catalog"); }
+
+function attachCatalogListener() {
+  if (catalogUnsub) catalogUnsub();
+  catalogUnsub = onSnapshot(
+    catalogDocRef(),
+    (snap) => {
+      const data = snap.exists() ? snap.data() : null;
+      const obj = (data && data.items) || {};
+      catalog = new Map(Object.entries(obj));
+    },
+    (err) => console.warn("catalog snapshot error", err),
+  );
+}
+
+async function saveCatalog() {
+  if (!isOwner(currentUser)) return;
+  const obj = {};
+  for (const [k, v] of catalog) obj[k] = v;
+  beginSaving();
+  try {
+    await setDoc(catalogDocRef(), {
+      items: obj,
+      updatedAt: serverTimestamp(),
+      updatedBy: currentUser?.email || null,
+    });
+  } catch (e) {
+    console.error("saveCatalog failed", e);
+  } finally {
+    endSaving();
+  }
+}
+
+function lookupCatalog(no) {
+  const k = normalizeKey(no);
+  return catalog.get(k) || items.get(k) || null;
+}
+
+async function maybeUpdateCatalog(item) {
+  if (!isOwner(currentUser)) return;
+  if (!item || !item.no) return;
+  const k = normalizeKey(item.no);
+  const existing = catalog.get(k);
+  const next = {
+    no: item.no,
+    name: item.name || (existing && existing.name) || "",
+    grade: item.grade || (existing && existing.grade) || "",
+    value: item.value || (existing && existing.value) || 0,
+  };
+  if (existing &&
+      existing.no === next.no &&
+      existing.name === next.name &&
+      existing.grade === next.grade &&
+      existing.value === next.value) return;
+  if (!next.name && !next.value) return;
+  catalog.set(k, next);
+  await saveCatalog();
+}
+
+async function bulkUpdateCatalog(itemsArray) {
+  if (!isOwner(currentUser)) return;
+  if (!itemsArray || itemsArray.length === 0) return;
+  let changed = false;
+  for (const item of itemsArray) {
+    if (!item || !item.no) continue;
+    const k = normalizeKey(item.no);
+    const existing = catalog.get(k);
+    const next = {
+      no: item.no,
+      name: item.name || (existing && existing.name) || "",
+      grade: item.grade || (existing && existing.grade) || "",
+      value: item.value || (existing && existing.value) || 0,
+    };
+    if (!next.name && !next.value) continue;
+    if (existing &&
+        existing.no === next.no &&
+        existing.name === next.name &&
+        existing.grade === next.grade &&
+        existing.value === next.value) continue;
+    catalog.set(k, next);
+    changed = true;
+  }
+  if (changed) await saveCatalog();
+}
+
+// ---------- OCR (Tesseract.js) ----------
+let pendingOcrFile = null;
+let tesseractCache = null;
+
+async function loadTesseract() {
+  if (tesseractCache) return tesseractCache;
+  if (window.Tesseract) {
+    tesseractCache = window.Tesseract;
+    return tesseractCache;
+  }
+  await new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("OCR 엔진 로드 실패"));
+    document.head.appendChild(script);
+  });
+  tesseractCache = window.Tesseract;
+  if (!tesseractCache) throw new Error("OCR 엔진을 사용할 수 없습니다.");
+  return tesseractCache;
+}
+
+function normalizeOcrSerial(setCode, num) {
+  const s = setCode.toLowerCase();
+  const n = String(num).replace(/\D/g, "").padStart(3, "0").slice(-3);
+  return `${s}-${n}`;
+}
+
+function extractSerial(text) {
+  if (!text) return null;
+  // Strip common confusables
+  const cleaned = text.replace(/O/gi, "0").replace(/[Il|]/g, "1");
+
+  // 패턴 1: "sv10 032" / "sv10-032" / "SV11W 005"
+  const re1 = /(sv\d+[a-zA-Z]?)\s*[-_/]?\s*(\d{2,4})/i;
+  const m1 = cleaned.match(re1);
+  if (m1) return normalizeOcrSerial(m1[1], m1[2]);
+
+  // 패턴 2: "032/198 sv10"
+  const re2 = /(\d{2,4})\s*\/\s*\d{2,4}\s+(sv\d+[a-zA-Z]?)/i;
+  const m2 = cleaned.match(re2);
+  if (m2) return normalizeOcrSerial(m2[2], m2[1]);
+
+  return null;
+}
+
+async function runOCR(file) {
+  const T = await loadTesseract();
+  showToast("일련번호 인식 중…");
+  const result = await T.recognize(file, "eng", { logger: () => {} });
+  const text = result?.data?.text || "";
+  return { text, serial: extractSerial(text) };
+}
+
+async function handleOcrFile(file) {
+  if (!file) return;
+  if (!isOwner(currentUser)) return;
+  try {
+    const { serial, text } = await runOCR(file);
+    if (!serial) {
+      showToast("일련번호를 찾지 못했습니다. 더 선명한 사진으로 다시 시도해 주세요.", "error");
+      console.log("OCR text:", text);
+      return;
+    }
+    els.cardNo.value = serial;
+    pendingOcrFile = file;
+    const meta = lookupCatalog(serial);
+    if (meta) {
+      if (meta.name) els.cardName.value = meta.name;
+      if (meta.grade) els.cardGrade.value = meta.grade;
+      if (meta.value) els.cardValue.value = meta.value;
+      showToast(`인식 완료: ${serial}${meta.name ? " · " + meta.name : ""}`, "success");
+    } else {
+      showToast(`인식: ${serial} (카탈로그에 없음 — 직접 입력)`, "success");
+    }
+    els.cardPreview.textContent = `📷 ${serial} 인식됨${pendingOcrFile ? " (저장 시 사진도 함께 업로드)" : ""}`;
+    els.cardPreview.classList.add("found");
+    els.cardPreview.classList.remove("error");
+    els.cardName.focus();
+  } catch (err) {
+    console.error("OCR failed", err);
+    showToast("OCR 실패: " + (err.message || err), "error");
+  }
+}
+
 // ---------- Cart ----------
 function persistCart() {
   try { localStorage.setItem("pokemon_cart_v1", JSON.stringify(cart)); } catch (e) {}
@@ -1918,6 +2096,11 @@ els.addForm.addEventListener("submit", async (e) => {
   if (!no) return;
   const result = await upsertCard({ no, name, grade, state, value, qty }, "merge");
   if (result.ok) {
+    await maybeUpdateCatalog(result.item);
+    if (pendingOcrFile) {
+      await uploadCardImage(result.item.no, pendingOcrFile);
+      pendingOcrFile = null;
+    }
     showToast(
       result.wasNew ? `추가됨: ${result.item.no}` : `수량 업데이트: ${result.item.no} (${result.item.qty}장)`,
       "success",
@@ -2262,6 +2445,23 @@ if (els.discountRemove) {
 if (els.discountCancel) els.discountCancel.addEventListener("click", closeDiscountModal);
 if (els.discountModalBackdrop) els.discountModalBackdrop.addEventListener("click", closeDiscountModal);
 
+// OCR button
+if (els.ocrBtn) {
+  els.ocrBtn.addEventListener("click", () => {
+    if (!isOwner(currentUser)) return;
+    els.ocrFile.value = "";
+    els.ocrFile.click();
+  });
+}
+if (els.ocrFile) {
+  els.ocrFile.addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    await handleOcrFile(file);
+  });
+}
+
 // Image auto-format toggle
 if (els.imageFormatOn) {
   els.imageFormatOn.checked = imageAutoFormat;
@@ -2336,6 +2536,7 @@ onAuthStateChanged(auth, (user) => {
 // Initial public read attempt even before auth state resolves.
 attachInventoryListener();
 attachSetsListener();
+attachCatalogListener();
 renderAll();
 renderCart();
 renderSets();

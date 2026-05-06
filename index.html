@@ -102,6 +102,11 @@
         <button class="btn btn-primary" type="submit">추가</button>
       </form>
       <p class="card-preview" id="card-preview"></p>
+      <div class="ocr-action">
+        <button type="button" class="btn btn-ghost ocr-btn" id="ocr-btn">📷 사진으로 일련번호 인식</button>
+        <span class="ocr-hint">사진을 선택하면 OCR로 일련번호를 추출하고, 카탈로그에 있으면 카드명·등급·가격이 자동으로 채워져요. 그 사진은 저장 시 카드 이미지로도 함께 업로드됩니다.</span>
+      </div>
+      <input type="file" id="ocr-file" accept="image/*" hidden />
       <label class="format-toggle" for="image-format-on">
         <input type="checkbox" id="image-format-on" />
         <span class="format-toggle-text">사진 업로드 시 자동 정렬 <small>흰 배경 1:1 캔버스에 카드를 가운데 정렬해 저장</small></span>
