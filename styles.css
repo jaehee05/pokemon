@@ -900,7 +900,7 @@ td .value-input:focus, td .qty-input:focus {
 
 .market-card-image {
   position: relative;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 5 / 7;
   background: var(--surface-2);
   overflow: hidden;
 }
