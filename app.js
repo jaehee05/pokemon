@@ -1,6 +1,8 @@
 import { auth, db, storage, googleProvider, OWNER_EMAILS } from "./firebase.js";
 import {
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   signOut,
   onAuthStateChanged,
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
@@ -1877,14 +1879,29 @@ async function removeCard(key) {
 }
 
 // ---------- Auth handlers ----------
+function shouldUseAuthRedirect() {
+  const ua = navigator.userAgent || "";
+  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/.test(ua);
+  const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|FxiOS|Edg|OPR/.test(ua);
+  // 모바일 또는 Safari는 popup이 자주 막혀서 redirect 사용
+  return isIOS || isAndroid || isSafari;
+}
+
 async function handleLogin() {
   try {
     setSyncStatus("connecting", "로그인 중…");
-    await signInWithPopup(auth, googleProvider);
+    if (shouldUseAuthRedirect()) {
+      await signInWithRedirect(auth, googleProvider);
+      // 페이지가 Google로 이동했다가 돌아옴 — 이후 코드 실행 안 됨
+    } else {
+      await signInWithPopup(auth, googleProvider);
+    }
   } catch (err) {
     console.error("login failed", err);
     refreshSyncStatus();
     if (err && err.code === "auth/popup-closed-by-user") return;
+    if (err && err.code === "auth/cancelled-popup-request") return;
     showToast("로그인 실패: " + (err.message || err), "error");
   }
 }
@@ -2444,6 +2461,14 @@ window.addEventListener("offline", () => setSyncStatus("offline"));
 setSyncStatus("connecting");
 renderAuthArea();
 applyOwnerMode();
+
+// signInWithRedirect 후 페이지 복귀 처리 (모바일/Safari 경로)
+getRedirectResult(auth).catch((err) => {
+  console.error("redirect result error", err);
+  if (err && err.code) {
+    showToast("로그인 실패: " + (err.message || err.code), "error");
+  }
+});
 
 onAuthStateChanged(auth, (user) => {
   currentUser = user || null;
