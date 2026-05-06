@@ -936,10 +936,6 @@ function renderBuyerCards(filtered) {
     const eff = getEffectivePrice(r);
     const orig = parseInt0(r.value);
 
-    const dealStrip = hasDiscount
-      ? `<div class="market-card-deal-strip">${r.discount.percent}% OFF${r.discount.endsAt ? ` · ${timeUntilLabel(r.discount.endsAt)}` : ""}</div>`
-      : "";
-
     const overlays = `
       ${r.state != null ? `<span class="market-card-state state-badge ${stateClass(r.state)}">${escapeHTML(r.state)}</span>` : ""}
       ${r.qty > 0
@@ -981,7 +977,6 @@ function renderBuyerCards(filtered) {
       <div class="market-card-body">
         <span class="market-card-no">${setChipHTML(r.no)}<span>${escapeHTML(r.no)}</span></span>
         <h3 class="market-card-title">${escapeHTML(r.name || "이름 미등록")}</h3>
-        ${dealStrip}
         <div class="market-card-bottom">
           ${priceBlock}
           ${addBtn}
