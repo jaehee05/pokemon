@@ -448,7 +448,7 @@ label.btn { cursor: pointer; }
 /* Add form */
 .add-form {
   display: grid;
-  grid-template-columns: 1.4fr 1.4fr 100px 130px 90px auto;
+  grid-template-columns: 1.3fr 1.3fr 90px 100px 110px 80px auto;
   gap: 8px;
   align-items: center;
 }
@@ -669,6 +669,60 @@ td .value-input:focus, td .qty-input:focus {
 .grade-badge.g-sr { background: var(--g-sr-bg); color: var(--g-sr-fg); }
 .grade-badge.g-sar { background: var(--g-sar-bg); color: var(--g-sar-fg); }
 .grade-badge.g-ur { background: var(--g-ur-bg); color: var(--g-ur-fg); }
+
+/* State badge & input */
+.state-badge {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  min-width: 44px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  background: var(--g-none-bg);
+  color: var(--g-none-fg);
+  white-space: nowrap;
+}
+.state-badge small {
+  font-size: 10px;
+  font-weight: 600;
+  margin-left: 1px;
+  opacity: 0.7;
+}
+.state-badge.st-perfect { background: #d3f0dd; color: #16723e; }
+.state-badge.st-good    { background: #d4e7ff; color: #1455a8; }
+.state-badge.st-mid     { background: #fde7b8; color: #8a5b07; }
+.state-badge.st-low     { background: #fcd6cc; color: #9c3119; }
+.state-badge.st-zero    { background: #e9eaee; color: #5a5f72; }
+.state-badge.st-none    { background: var(--g-none-bg); color: var(--g-none-fg); }
+
+.state-input {
+  width: 64px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 999px;
+  padding: 3px 10px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  color: var(--text);
+}
+.state-input:hover { border-color: var(--border); background: var(--surface-2); }
+.state-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(79, 92, 238, 0.15);
+}
+.state-input.st-perfect { background: #d3f0dd; color: #16723e; }
+.state-input.st-good    { background: #d4e7ff; color: #1455a8; }
+.state-input.st-mid     { background: #fde7b8; color: #8a5b07; }
+.state-input.st-low     { background: #fcd6cc; color: #9c3119; }
+.state-input.st-zero    { background: #e9eaee; color: #5a5f72; }
+.state-input.st-none    { background: transparent; color: var(--muted); }
 
 /* Grade select inline */
 .grade-select {

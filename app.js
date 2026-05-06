@@ -32,7 +32,7 @@ let savingTimer = null;
 
 let sortKey = "no";
 let sortDir = 1; // 1 asc, -1 desc
-let activeGrade = "";
+let activeState = ""; // "" = 전체, "__none__" = 미평가, "10".."0" = 정확한 점수
 
 const GRADE_ORDER = ["RR", "SR", "SAR", "UR", "AR", "R", "U", "C"];
 const GRADE_RANK = Object.fromEntries(GRADE_ORDER.map((g, i) => [g, i]));
@@ -56,6 +56,7 @@ const els = {
   cardNo: $("card-no"),
   cardName: $("card-name"),
   cardGrade: $("card-grade"),
+  cardState: $("card-state"),
   cardValue: $("card-value"),
   cardQty: $("card-qty"),
   cardPreview: $("card-preview"),
@@ -119,6 +120,26 @@ function normalizeGrade(raw) {
   if (raw == null) return "";
   const s = String(raw).trim().toUpperCase();
   return s;
+}
+
+function normalizeState(raw) {
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(10, Math.round(n)));
+}
+
+function stateClass(s) {
+  if (s == null) return "st-none";
+  if (s >= 9) return "st-perfect";
+  if (s >= 7) return "st-good";
+  if (s >= 4) return "st-mid";
+  if (s >= 1) return "st-low";
+  return "st-zero";
+}
+
+function stateLabel(s) {
+  return s == null ? "—" : `${s}/10`;
 }
 
 function isOwner(user) {
@@ -215,16 +236,17 @@ async function importFromText(text) {
   let header = rows[0];
   let dataRows = rows.slice(1);
   const looksLikeHeader = header.some((h) =>
-    /일련번호|번호|카드|등급|가치|가격|수량|보유|name|grade|value|price|qty/i.test(String(h)),
+    /일련번호|번호|카드|등급|상태|가치|가격|수량|보유|name|grade|state|condition|value|price|qty/i.test(String(h)),
   );
   if (!looksLikeHeader) {
-    header = ["일련번호", "카드명", "등급", "가치", "보유 수량"];
+    header = ["일련번호", "카드명", "등급", "상태", "가치", "보유 수량"];
     dataRows = rows;
   }
 
   const noIdx = findColumnIndex(header, ["일련번호", "번호", "no", "number", "code"]);
   const nameIdx = findColumnIndex(header, ["카드명", "이름", "name", "카드"]);
   const gradeIdx = findColumnIndex(header, ["등급", "grade", "rarity"]);
+  const stateIdx = findColumnIndex(header, ["상태", "state", "condition"]);
   const valueIdx = findColumnIndex(header, ["가치", "가격", "value", "price", "원"]);
   const qtyIdx = findColumnIndex(header, ["보유", "수량", "qty", "quantity"]);
 
@@ -243,6 +265,8 @@ async function importFromText(text) {
     if (!key) continue;
     const name = nameIdx >= 0 ? (r[nameIdx] || "").trim() : "";
     const grade = gradeIdx >= 0 ? normalizeGrade(r[gradeIdx]) : "";
+    const stateRaw = stateIdx >= 0 ? r[stateIdx] : "";
+    const state = stateIdx >= 0 ? normalizeState(stateRaw) : null;
     const value = valueIdx >= 0 ? parseInt0(r[valueIdx]) : 0;
     const qty = qtyIdx >= 0 ? Math.max(0, parseInt0(r[qtyIdx])) : 1;
 
@@ -250,9 +274,11 @@ async function importFromText(text) {
     if (existing) updated++;
     else added++;
     next.set(key, {
+      ...(existing || {}),
       no: no,
       name: name || (existing && existing.name) || "",
       grade: grade || (existing && existing.grade) || "",
+      state: state != null ? state : (existing ? existing.state : null),
       value: value || (existing && existing.value) || 0,
       qty: qty,
     });
@@ -532,34 +558,35 @@ function renderAuthArea() {
 function renderStats() {
   let totalQty = 0;
   let totalValue = 0;
-  const byGrade = new Map();
+  const byState = new Map();
   for (const [, v] of items) {
     const qty = Number(v.qty) || 0;
     const val = Number(v.value) || 0;
     totalQty += qty;
     totalValue += qty * val;
-    const g = v.grade || "—";
-    const cur = byGrade.get(g) || { types: 0, qty: 0 };
+    const s = v.state == null ? "__none__" : String(v.state);
+    const cur = byState.get(s) || { types: 0, qty: 0 };
     cur.types += 1;
     cur.qty += qty;
-    byGrade.set(g, cur);
+    byState.set(s, cur);
   }
   els.statTypes.textContent = items.size.toLocaleString("ko-KR");
   els.statQty.textContent = totalQty.toLocaleString("ko-KR");
   els.statValue.textContent = formatWon(totalValue);
 
-  const orderedGrades = Array.from(byGrade.keys()).sort((a, b) => {
-    const ra = GRADE_RANK[a] != null ? GRADE_RANK[a] : 99;
-    const rb = GRADE_RANK[b] != null ? GRADE_RANK[b] : 99;
-    return ra - rb;
+  const orderedStates = Array.from(byState.keys()).sort((a, b) => {
+    if (a === "__none__") return 1;
+    if (b === "__none__") return -1;
+    return Number(b) - Number(a); // descending
   });
   els.statGrades.innerHTML = "";
-  for (const g of orderedGrades) {
-    const stat = byGrade.get(g);
+  for (const s of orderedStates) {
+    const stat = byState.get(s);
+    const score = s === "__none__" ? null : Number(s);
     const pill = document.createElement("div");
     pill.className = "grade-pill";
     pill.innerHTML = `
-      <span class="grade-badge ${gradeClass(g)}">${escapeHTML(g)}</span>
+      <span class="state-badge ${stateClass(score)}">${score == null ? "—" : `${score}<small>/10</small>`}</span>
       <span class="grade-pill-text">${stat.types}종 · ${stat.qty}장</span>
     `;
     els.statGrades.appendChild(pill);
@@ -581,34 +608,30 @@ function gradeClass(g) {
 
 function renderGradeFilter() {
   const container = els.gradeFilter;
-  const presentGrades = new Set();
-  for (const [, v] of items) presentGrades.add(v.grade || "");
-  const grades = Array.from(presentGrades)
-    .filter((g) => g !== "")
-    .sort((a, b) => {
-      const ra = GRADE_RANK[a] != null ? GRADE_RANK[a] : 99;
-      const rb = GRADE_RANK[b] != null ? GRADE_RANK[b] : 99;
-      return ra - rb;
-    });
+  const presentStates = new Set();
+  for (const [, v] of items) presentStates.add(v.state == null ? "__none__" : String(v.state));
+  const states = Array.from(presentStates)
+    .filter((s) => s !== "__none__")
+    .sort((a, b) => Number(b) - Number(a)); // descending: 10 → 0
 
   container.innerHTML = "";
   const allBtn = document.createElement("button");
-  allBtn.className = "chip" + (activeGrade === "" ? " active" : "");
-  allBtn.dataset.grade = "";
+  allBtn.className = "chip" + (activeState === "" ? " active" : "");
+  allBtn.dataset.state = "";
   allBtn.textContent = "전체";
   container.appendChild(allBtn);
-  for (const g of grades) {
+  for (const s of states) {
     const btn = document.createElement("button");
-    btn.className = "chip" + (activeGrade === g ? " active" : "");
-    btn.dataset.grade = g;
-    btn.innerHTML = `<span class="grade-badge ${gradeClass(g)}">${escapeHTML(g)}</span>`;
+    btn.className = "chip" + (activeState === s ? " active" : "");
+    btn.dataset.state = s;
+    btn.innerHTML = `<span class="state-badge ${stateClass(Number(s))}">${s}<small>/10</small></span>`;
     container.appendChild(btn);
   }
-  if (presentGrades.has("")) {
+  if (presentStates.has("__none__")) {
     const btn = document.createElement("button");
-    btn.className = "chip" + (activeGrade === "__none__" ? " active" : "");
-    btn.dataset.grade = "__none__";
-    btn.textContent = "등급 없음";
+    btn.className = "chip" + (activeState === "__none__" ? " active" : "");
+    btn.dataset.state = "__none__";
+    btn.textContent = "미평가";
     container.appendChild(btn);
   }
 }
@@ -624,6 +647,15 @@ function compareItems(a, b) {
       const ra = GRADE_RANK[a.grade] != null ? GRADE_RANK[a.grade] : 99;
       const rb = GRADE_RANK[b.grade] != null ? GRADE_RANK[b.grade] : 99;
       if (ra !== rb) return (ra - rb) * dir;
+      return a.no.localeCompare(b.no, "ko", { numeric: true });
+    }
+    case "state": {
+      const sa = a.state;
+      const sb = b.state;
+      if (sa == null && sb == null) return a.no.localeCompare(b.no, "ko", { numeric: true });
+      if (sa == null) return 1;
+      if (sb == null) return -1;
+      if (sa !== sb) return (sa - sb) * dir;
       return a.no.localeCompare(b.no, "ko", { numeric: true });
     }
     case "value":
@@ -650,10 +682,11 @@ function renderInventory() {
   all.sort(compareItems);
 
   let filtered = all;
-  if (activeGrade === "__none__") {
-    filtered = filtered.filter((r) => !r.grade);
-  } else if (activeGrade) {
-    filtered = filtered.filter((r) => r.grade === activeGrade);
+  if (activeState === "__none__") {
+    filtered = filtered.filter((r) => r.state == null);
+  } else if (activeState !== "") {
+    const target = Number(activeState);
+    filtered = filtered.filter((r) => r.state === target);
   }
   if (q) {
     filtered = filtered.filter(
@@ -673,13 +706,7 @@ function renderInventory() {
         <td class="thumb-cell">${thumbCell}</td>
         <td class="mono">${escapeHTML(r.no)}</td>
         <td><span class="cell-edit" data-field="name" tabindex="0">${escapeHTML(r.name || "")}<span class="cell-empty">${r.name ? "" : "이름 없음"}</span></span></td>
-        <td>
-          <select class="grade-select ${gradeClass(r.grade)}" data-field="grade" aria-label="등급">
-            <option value="" ${!r.grade ? "selected" : ""}>—</option>
-            ${["RR","SR","SAR","UR","AR","R","U","C"].map(g => `<option value="${g}" ${r.grade===g?"selected":""}>${g}</option>`).join("")}
-            ${r.grade && !GRADE_ORDER.includes(r.grade) ? `<option value="${escapeAttr(r.grade)}" selected>${escapeHTML(r.grade)}</option>` : ""}
-          </select>
-        </td>
+        <td><input type="number" class="state-input ${stateClass(r.state)}" data-field="state" min="0" max="10" step="1" value="${r.state == null ? "" : r.state}" placeholder="—" aria-label="상태 (0-10점)" /></td>
         <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가격" /></td>
         <td class="num">
           <div class="qty-cell">
@@ -696,7 +723,7 @@ function renderInventory() {
         <td class="thumb-cell">${thumbCell}</td>
         <td class="mono">${escapeHTML(r.no)}</td>
         <td>${escapeHTML(r.name || "") || '<span class="cell-empty">이름 없음</span>'}</td>
-        <td>${r.grade ? `<span class="grade-badge ${gradeClass(r.grade)}">${escapeHTML(r.grade)}</span>` : '<span class="grade-badge g-none">—</span>'}</td>
+        <td><span class="state-badge ${stateClass(r.state)}">${r.state == null ? "—" : `${r.state}<small>/10</small>`}</span></td>
         <td class="num">${formatWon(r.value || 0)}</td>
         <td class="num">${(r.qty || 0).toLocaleString("ko-KR")}</td>
         <td class="num total-cell">${formatWon(total)}</td>
@@ -859,7 +886,7 @@ function closeLightbox() {
 }
 
 // ---------- Mutations ----------
-async function upsertCard({ no, name, grade, value, qty }, mode = "merge") {
+async function upsertCard({ no, name, grade, state, value, qty }, mode = "merge") {
   if (!isOwner(currentUser)) {
     showToast("관리자 로그인이 필요합니다.", "error");
     return { ok: false, msg: "권한 없음" };
@@ -868,10 +895,13 @@ async function upsertCard({ no, name, grade, value, qty }, mode = "merge") {
   const key = normalizeKey(trimmedNo);
   if (!key) return { ok: false, msg: "일련번호를 입력하세요." };
   const existing = items.get(key);
+  const incomingState = state != null && state !== "" ? normalizeState(state) : null;
   const next = {
+    ...(existing || {}),
     no: trimmedNo,
     name: name != null && name !== "" ? String(name).trim() : (existing ? existing.name : ""),
     grade: grade != null && grade !== "" ? normalizeGrade(grade) : (existing ? existing.grade : ""),
+    state: incomingState != null ? incomingState : (existing ? (existing.state ?? null) : null),
     value: value != null && value !== "" ? parseInt0(value) : (existing ? existing.value : 0),
     qty: 0,
   };
@@ -899,6 +929,7 @@ async function updateField(key, field, raw) {
   const next = { ...entry };
   if (field === "name") next.name = String(raw || "").trim();
   else if (field === "grade") next.grade = normalizeGrade(raw);
+  else if (field === "state") next.state = (raw === "" || raw == null) ? null : normalizeState(raw);
   else if (field === "value") next.value = Math.max(0, parseInt0(raw));
   else if (field === "qty") {
     const q = Math.max(0, parseInt0(raw));
@@ -987,7 +1018,7 @@ function showSuggestions(query) {
     li.dataset.no = m.no;
     li.innerHTML = `
       <span><span class="no">${escapeHTML(m.no)}</span> &nbsp; ${escapeHTML(m.name || "")}</span>
-      <span class="meta">${m.grade ? `<span class="grade-badge ${gradeClass(m.grade)}">${escapeHTML(m.grade)}</span>` : ""} ${formatWon(m.value || 0)}</span>
+      <span class="meta">${m.state != null ? `<span class="state-badge ${stateClass(m.state)}">${m.state}<small>/10</small></span>` : ""} ${formatWon(m.value || 0)}</span>
     `;
     list.appendChild(li);
   }
@@ -1008,7 +1039,7 @@ function exportCSV() {
     showToast("내보낼 데이터가 없습니다.", "error");
     return;
   }
-  const rows = [["일련번호", "카드명", "등급", "가치", "보유 수량", "합계"]];
+  const rows = [["일련번호", "카드명", "등급", "상태", "가치", "보유 수량", "합계"]];
   let total = 0;
   const sorted = Array.from(items.values()).sort((a, b) =>
     a.no.localeCompare(b.no, "ko", { numeric: true }),
@@ -1016,9 +1047,9 @@ function exportCSV() {
   for (const r of sorted) {
     const sum = (r.qty || 0) * (r.value || 0);
     total += sum;
-    rows.push([r.no, r.name, r.grade, r.value, r.qty, sum]);
+    rows.push([r.no, r.name, r.grade, r.state == null ? "" : r.state, r.value, r.qty, sum]);
   }
-  rows.push(["", "", "", "", "합계", total]);
+  rows.push(["", "", "", "", "", "합계", total]);
   const csv = rows.map((r) => r.map(csvEscape).join(",")).join("\n");
   const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
@@ -1066,10 +1097,11 @@ els.addForm.addEventListener("submit", async (e) => {
   const no = els.cardNo.value.trim();
   const name = els.cardName.value.trim();
   const grade = els.cardGrade.value;
+  const state = els.cardState.value;
   const value = els.cardValue.value;
   const qty = Math.max(1, parseInt(els.cardQty.value, 10) || 1);
   if (!no) return;
-  const result = await upsertCard({ no, name, grade, value, qty }, "merge");
+  const result = await upsertCard({ no, name, grade, state, value, qty }, "merge");
   if (result.ok) {
     showToast(
       result.wasNew ? `추가됨: ${result.item.no}` : `수량 업데이트: ${result.item.no} (${result.item.qty}장)`,
@@ -1078,6 +1110,7 @@ els.addForm.addEventListener("submit", async (e) => {
     els.cardNo.value = "";
     els.cardName.value = "";
     els.cardGrade.value = "";
+    els.cardState.value = "";
     els.cardValue.value = "";
     els.cardQty.value = "1";
     els.suggestions.classList.add("hidden");
@@ -1115,6 +1148,7 @@ els.cardNo.addEventListener("keydown", (e) => {
       if (existing) {
         els.cardName.value = existing.name || "";
         els.cardGrade.value = existing.grade || "";
+        els.cardState.value = existing.state == null ? "" : String(existing.state);
         els.cardValue.value = existing.value || "";
       }
       els.cardQty.focus();
@@ -1237,8 +1271,8 @@ els.inventoryBody.addEventListener("change", async (e) => {
   if (!tr) return;
   const key = tr.dataset.key;
   const target = e.target;
-  if (target.matches(".grade-select")) {
-    await updateField(key, "grade", target.value);
+  if (target.matches(".state-input")) {
+    await updateField(key, "state", target.value);
   } else if (target.matches(".value-input")) {
     await updateField(key, "value", target.value);
   } else if (target.matches(".qty-input")) {
@@ -1258,7 +1292,7 @@ els.inventoryTable.querySelectorAll("th.sortable").forEach((th) => {
 els.gradeFilter.addEventListener("click", (e) => {
   const chip = e.target.closest(".chip");
   if (!chip) return;
-  activeGrade = chip.dataset.grade || "";
+  activeState = chip.dataset.state || "";
   renderAll();
 });
 

@@ -83,6 +83,7 @@
           <option value="SAR">SAR</option>
           <option value="UR">UR</option>
         </select>
+        <input type="number" id="card-state" min="0" max="10" step="1" placeholder="상태" aria-label="상태 (0-10점)" />
         <input type="number" id="card-value" min="0" step="100" placeholder="가치(원)" />
         <input type="number" id="card-qty" min="1" step="1" value="1" aria-label="수량" />
         <button class="btn btn-primary" type="submit">추가</button>
@@ -102,7 +103,7 @@
 
       <div class="filters">
         <div class="grade-filter" id="grade-filter">
-          <button class="chip active" data-grade="">전체</button>
+          <button class="chip active" data-state="">전체</button>
         </div>
         <input
           type="search"
@@ -135,7 +136,7 @@
               <th class="th-thumb">사진</th>
               <th class="sortable" data-sort="no">일련번호 <span class="sort-ind"></span></th>
               <th class="sortable" data-sort="name">카드명 <span class="sort-ind"></span></th>
-              <th class="sortable" data-sort="grade">등급 <span class="sort-ind"></span></th>
+              <th class="sortable" data-sort="state">상태 <span class="sort-ind"></span></th>
               <th class="sortable num" data-sort="value">가격 <span class="sort-ind"></span></th>
               <th class="sortable num" data-sort="qty">재고 <span class="sort-ind"></span></th>
               <th class="sortable num" data-sort="total">합계 <span class="sort-ind"></span></th>
