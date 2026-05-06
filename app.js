@@ -889,7 +889,7 @@ function renderInventory() {
             <option value="B" ${r.state === "B" ? "selected" : ""}>B</option>
           </select>
         </td>
-        <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가격" /></td>
+        <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="50" value="${r.value || 0}" aria-label="가격" /></td>
         <td class="discount-cell">${discountCellHTML(r)}</td>
         <td class="num">
           <div class="qty-cell">
