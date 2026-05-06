@@ -1464,6 +1464,38 @@ body.modal-open { overflow: hidden; }
   justify-content: flex-end;
 }
 
+/* Image auto-format toggle */
+.format-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  font-size: 13.5px;
+  transition: background 120ms, border-color 120ms;
+}
+.format-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--primary);
+  flex-shrink: 0;
+}
+.format-toggle-text { line-height: 1.4; }
+.format-toggle-text small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+  margin-top: 1px;
+}
+.format-toggle:hover { background: #fff; border-color: var(--border-strong); }
+
 /* Discount: admin button + modal + buyer card */
 .discount-cell { white-space: nowrap; }
 

@@ -127,10 +127,16 @@ const els = {
   discountEnd: $("discount-end"),
   discountRemove: $("discount-remove"),
   discountCancel: $("discount-cancel"),
+
+  imageFormatOn: $("image-format-on"),
 };
 
 let currentUploadKey = null;
 let currentDiscountKey = null;
+let imageAutoFormat = (() => {
+  try { return localStorage.getItem("pokemon_image_auto_format") !== "0"; }
+  catch (e) { return true; }
+})();
 let cart = {};
 try {
   cart = JSON.parse(localStorage.getItem("pokemon_cart_v1") || "{}") || {};
@@ -1057,6 +1063,58 @@ function safeStoragePath(key) {
   return String(key).replace(/[^a-z0-9-]/g, "_");
 }
 
+async function formatCardImage(file, options = {}) {
+  const {
+    outputSize = 1000,
+    cardSizeRatio = 0.9,
+    quality = 0.88,
+    background = "#ffffff",
+  } = options;
+  if (!file.type || !file.type.startsWith("image/")) {
+    throw new Error("이미지 파일이 아닙니다.");
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("파일 읽기 실패"));
+    reader.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error("이미지 로드 실패 (HEIC 등 미지원 포맷일 수 있음)"));
+    im.src = dataUrl;
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = outputSize;
+  canvas.height = outputSize;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, outputSize, outputSize);
+  const maxDim = outputSize * cardSizeRatio;
+  const ratio = img.width / img.height;
+  let drawW, drawH;
+  if (ratio >= 1) {
+    drawW = maxDim;
+    drawH = drawW / ratio;
+  } else {
+    drawH = maxDim;
+    drawW = drawH * ratio;
+  }
+  const drawX = (outputSize - drawW) / 2;
+  const drawY = (outputSize - drawH) / 2;
+  ctx.drawImage(img, drawX, drawY, drawW, drawH);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("이미지 변환 실패"))),
+      "image/jpeg",
+      quality,
+    );
+  });
+}
+
 async function uploadCardImage(key, file) {
   if (!isOwner(currentUser)) {
     showToast("관리자만 업로드할 수 있습니다.", "error");
@@ -1065,9 +1123,11 @@ async function uploadCardImage(key, file) {
   const k = normalizeKey(key);
   const entry = items.get(k);
   if (!entry) return;
-  showToast("이미지 업로드 중…");
+  showToast(imageAutoFormat ? "사진 자동 정렬 중…" : "이미지 업로드 중…");
   try {
-    const blob = await resizeImage(file, 900, 0.85);
+    const blob = imageAutoFormat
+      ? await formatCardImage(file, { outputSize: 1000, cardSizeRatio: 0.9 })
+      : await resizeImage(file, 900, 0.85);
     const path = `cards/${safeStoragePath(k)}.jpg`;
     const ref = storageRef(storage, path);
     await uploadBytes(ref, blob, {
@@ -2201,6 +2261,21 @@ if (els.discountRemove) {
 }
 if (els.discountCancel) els.discountCancel.addEventListener("click", closeDiscountModal);
 if (els.discountModalBackdrop) els.discountModalBackdrop.addEventListener("click", closeDiscountModal);
+
+// Image auto-format toggle
+if (els.imageFormatOn) {
+  els.imageFormatOn.checked = imageAutoFormat;
+  els.imageFormatOn.addEventListener("change", (e) => {
+    imageAutoFormat = !!e.target.checked;
+    try { localStorage.setItem("pokemon_image_auto_format", imageAutoFormat ? "1" : "0"); } catch (err) {}
+    showToast(
+      imageAutoFormat
+        ? "사진 업로드 시 자동 정렬이 켜졌습니다."
+        : "사진 업로드 시 자동 정렬이 꺼졌습니다.",
+      "success",
+    );
+  });
+}
 
 // Sets (확장팩 라벨)
 if (els.setsForm) {
