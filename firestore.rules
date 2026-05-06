@@ -20,6 +20,15 @@ service cloud.firestore {
       allow write: if isOwner();
     }
 
+    // ── 구매 요청 ─────────────────────────────────────────────────────────
+    // 누구나 새 요청을 만들 수 있지만(create), 기존 요청 덮어쓰기·삭제는 관리자만.
+    // 읽기는 관리자만 가능 (구매자는 발급된 코드를 직접 보관).
+    match /requests/{code} {
+      allow read: if isOwner();
+      allow create: if true;
+      allow update, delete: if isOwner();
+    }
+
     // ── 사용자별 데이터 (마이그레이션 소스) ────────────────────────────────
     match /users/{uid}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == uid;

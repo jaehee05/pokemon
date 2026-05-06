@@ -89,9 +89,34 @@ const els = {
   lightboxImg: $("lightbox-img"),
   lightboxClose: $("lightbox-close"),
   lightboxBackdrop: $("lightbox-backdrop"),
+
+  cartFab: $("cart-fab"),
+  cartFabCount: $("cart-fab-count"),
+  cartDrawer: $("cart-drawer"),
+  cartDrawerBody: $("cart-drawer-body"),
+  cartDrawerClose: $("cart-drawer-close"),
+  cartBackdrop: $("cart-backdrop"),
+  cartTotalQty: $("cart-total-qty"),
+  cartTotalValue: $("cart-total-value"),
+  cartClear: $("cart-clear"),
+  cartSubmit: $("cart-submit"),
+  codeModal: $("code-modal"),
+  codeModalBackdrop: $("code-modal-backdrop"),
+  codeDisplay: $("code-display"),
+  codeModalMeta: $("code-modal-meta"),
+  codeCopy: $("code-copy"),
+  codeClose: $("code-close"),
+  requestForm: $("request-form"),
+  requestCodeInput: $("request-code-input"),
+  requestResult: $("request-result"),
 };
 
 let currentUploadKey = null;
+let cart = {};
+try {
+  cart = JSON.parse(localStorage.getItem("pokemon_cart_v1") || "{}") || {};
+} catch (e) { cart = {}; }
+let lastRequest = null; // { code, data }
 
 // ---------- Helpers ----------
 function normalizeKey(s) {
@@ -522,6 +547,7 @@ function renderAll() {
   renderStats();
   renderGradeFilter();
   renderInventory();
+  renderCart();
 }
 
 function applyOwnerMode() {
@@ -778,12 +804,27 @@ function renderBuyerCards(filtered) {
            <span>사진 준비 중</span>
          </div>`;
 
+    const cartQty = getCartQty(r.key);
+    const stock = Math.max(0, parseInt0(r.qty));
+    const cartFull = stock > 0 && cartQty >= stock;
+    let addBtn;
+    if (stock <= 0) {
+      addBtn = `<button class="market-card-add" type="button" disabled>품절</button>`;
+    } else if (cartQty > 0) {
+      addBtn = `<button class="market-card-add added" type="button" data-cart-act="add" data-key="${escapeAttr(r.key)}" ${cartFull ? "disabled" : ""}>담김 (${cartQty})</button>`;
+    } else {
+      addBtn = `<button class="market-card-add" type="button" data-cart-act="add" data-key="${escapeAttr(r.key)}">담기</button>`;
+    }
+
     card.innerHTML = `
       ${imageBlock}
       <div class="market-card-body">
         <span class="market-card-no">${escapeHTML(r.no)}</span>
         <h3 class="market-card-title">${escapeHTML(r.name || "이름 미등록")}</h3>
-        <div class="market-card-price">${formatWon(r.value || 0)}</div>
+        <div class="market-card-bottom">
+          <span class="market-card-price">${formatWon(r.value || 0)}</span>
+          ${addBtn}
+        </div>
       </div>
     `;
     grid.appendChild(card);
@@ -925,6 +966,383 @@ function closeLightbox() {
   els.lightbox.hidden = true;
   els.lightboxImg.src = "";
   document.body.classList.remove("lightbox-open");
+}
+
+// ---------- Cart ----------
+function persistCart() {
+  try { localStorage.setItem("pokemon_cart_v1", JSON.stringify(cart)); } catch (e) {}
+}
+function cartCount() {
+  let n = 0;
+  for (const k in cart) n += cart[k] || 0;
+  return n;
+}
+function getCartQty(key) {
+  return cart[normalizeKey(key)] || 0;
+}
+function addToCart(key, delta = 1) {
+  const k = normalizeKey(key);
+  const item = items.get(k);
+  if (!item) return;
+  const stock = Math.max(0, parseInt0(item.qty));
+  if (stock <= 0 && delta > 0) {
+    showToast("품절된 카드입니다.", "error");
+    return;
+  }
+  const cur = cart[k] || 0;
+  let next = cur + delta;
+  if (next > stock) {
+    next = stock;
+    showToast(`재고는 최대 ${stock}장까지 담을 수 있어요.`, "error");
+  }
+  if (next <= 0) delete cart[k];
+  else cart[k] = next;
+  persistCart();
+  renderCart();
+  renderInventory();
+}
+function setCartQty(key, qty) {
+  const k = normalizeKey(key);
+  const item = items.get(k);
+  if (!item) return;
+  const stock = Math.max(0, parseInt0(item.qty));
+  let n = Math.max(0, Math.min(stock, parseInt0(qty)));
+  if (n <= 0) delete cart[k];
+  else cart[k] = n;
+  persistCart();
+  renderCart();
+  renderInventory();
+}
+function removeFromCart(key) {
+  delete cart[normalizeKey(key)];
+  persistCart();
+  renderCart();
+  renderInventory();
+}
+function clearCart() {
+  cart = {};
+  persistCart();
+  renderCart();
+  renderInventory();
+}
+
+function renderCart() {
+  if (!els.cartFab) return;
+  const count = cartCount();
+  els.cartFab.hidden = count === 0;
+  if (els.cartFabCount) els.cartFabCount.textContent = count.toLocaleString("ko-KR");
+
+  const body = els.cartDrawerBody;
+  if (!body) return;
+  body.innerHTML = "";
+  let totalQty = 0;
+  let totalValue = 0;
+  const entries = Object.entries(cart);
+  if (entries.length === 0) {
+    body.innerHTML = `<p class="empty">장바구니가 비어 있습니다.</p>`;
+  } else {
+    for (const [key, qty] of entries) {
+      const item = items.get(key);
+      if (!item) {
+        const row = document.createElement("div");
+        row.className = "cart-item missing";
+        row.innerHTML = `
+          <div class="cart-item-info">
+            <div class="cart-item-name">삭제된 카드</div>
+            <div class="cart-item-no">${escapeHTML(key)}</div>
+          </div>
+          <button class="icon-btn danger" data-cart-act="remove" data-key="${escapeAttr(key)}">×</button>
+        `;
+        body.appendChild(row);
+        continue;
+      }
+      const stock = Math.max(0, parseInt0(item.qty));
+      const lineTotal = qty * (item.value || 0);
+      totalQty += qty;
+      totalValue += lineTotal;
+      const row = document.createElement("div");
+      row.className = "cart-item";
+      row.dataset.key = key;
+      const thumb = item.imageUrl
+        ? `<img class="cart-item-thumb" src="${escapeAttr(item.imageUrl)}${item.imageUpdatedAt ? `?t=${item.imageUpdatedAt}` : ""}" alt="" loading="lazy" />`
+        : `<div class="cart-item-thumb empty">—</div>`;
+      row.innerHTML = `
+        ${thumb}
+        <div class="cart-item-info">
+          <div class="cart-item-name">${escapeHTML(item.name || "이름 미등록")}</div>
+          <div class="cart-item-no">${escapeHTML(item.no)} · ${formatWon(item.value || 0)}</div>
+        </div>
+        <div class="cart-item-qty">
+          <button class="icon-btn" data-cart-act="dec" data-key="${escapeAttr(key)}" type="button">−</button>
+          <input type="number" class="cart-qty-input" data-key="${escapeAttr(key)}" min="0" max="${stock}" value="${qty}" aria-label="수량" />
+          <button class="icon-btn" data-cart-act="inc" data-key="${escapeAttr(key)}" type="button">+</button>
+        </div>
+        <button class="icon-btn danger cart-item-remove" data-cart-act="remove" data-key="${escapeAttr(key)}" type="button" aria-label="삭제">×</button>
+      `;
+      body.appendChild(row);
+    }
+  }
+  if (els.cartTotalQty) els.cartTotalQty.textContent = totalQty.toLocaleString("ko-KR");
+  if (els.cartTotalValue) els.cartTotalValue.textContent = formatWon(totalValue);
+  if (els.cartSubmit) els.cartSubmit.disabled = totalQty === 0;
+}
+
+function openCartDrawer() {
+  els.cartDrawer.hidden = false;
+  els.cartBackdrop.hidden = false;
+  document.body.classList.add("drawer-open");
+}
+function closeCartDrawer() {
+  els.cartDrawer.hidden = true;
+  els.cartBackdrop.hidden = true;
+  document.body.classList.remove("drawer-open");
+}
+
+// ---------- Purchase request ----------
+const CODE_CHARS = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"; // 0,O,1,I,L 제외
+function generateCode(len = 5) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  }
+  return s;
+}
+
+async function submitPurchaseRequest() {
+  const entries = Object.entries(cart);
+  if (entries.length === 0) {
+    showToast("장바구니가 비어 있습니다.", "error");
+    return;
+  }
+  const cartItems = [];
+  let totalQty = 0;
+  let totalValue = 0;
+  for (const [key, qty] of entries) {
+    const item = items.get(key);
+    if (!item || qty <= 0) continue;
+    cartItems.push({
+      key,
+      no: item.no,
+      name: item.name || "",
+      qty,
+      value: item.value || 0,
+      state: item.state == null ? null : item.state,
+      grade: item.grade || "",
+      imageUrl: item.imageUrl || "",
+    });
+    totalQty += qty;
+    totalValue += qty * (item.value || 0);
+  }
+  if (cartItems.length === 0) {
+    showToast("유효한 카드가 없습니다.", "error");
+    return;
+  }
+  if (els.cartSubmit) els.cartSubmit.disabled = true;
+  showToast("요청 코드 생성 중…");
+
+  let success = false;
+  let lastErr = null;
+  let code = null;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    code = generateCode(5);
+    try {
+      await setDoc(doc(db, "requests", code), {
+        code,
+        items: cartItems,
+        totalQty,
+        totalValue,
+        status: "pending",
+        createdAt: serverTimestamp(),
+      });
+      success = true;
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (e && e.code === "permission-denied") {
+        // collision (existing doc cannot be updated by anonymous) → retry with new code
+        continue;
+      }
+      break;
+    }
+  }
+  if (els.cartSubmit) els.cartSubmit.disabled = cartCount() === 0;
+  if (!success) {
+    showToast("요청 전송 실패: " + ((lastErr && lastErr.message) || "잠시 후 다시 시도해 주세요."), "error");
+    return;
+  }
+  clearCart();
+  closeCartDrawer();
+  openCodeModal(code, totalQty, totalValue);
+}
+
+function openCodeModal(code, totalQty, totalValue) {
+  els.codeDisplay.textContent = code;
+  if (els.codeModalMeta) {
+    els.codeModalMeta.textContent = `총 ${totalQty}장 · ${formatWon(totalValue)}`;
+  }
+  els.codeModal.hidden = false;
+  document.body.classList.add("modal-open");
+}
+function closeCodeModal() {
+  els.codeModal.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+// ---------- Admin: lookup & process request ----------
+async function lookupRequest(rawCode) {
+  if (!isOwner(currentUser)) return;
+  const code = String(rawCode || "").trim().toUpperCase();
+  if (!code) {
+    showToast("코드를 입력하세요.", "error");
+    return;
+  }
+  els.requestResult.innerHTML = `<p class="empty">조회 중…</p>`;
+  try {
+    const snap = await getDoc(doc(db, "requests", code));
+    if (!snap.exists()) {
+      els.requestResult.innerHTML = `<p class="empty">해당 코드의 요청이 없습니다.</p>`;
+      lastRequest = null;
+      return;
+    }
+    const data = snap.data();
+    lastRequest = { code, data };
+    renderRequestResult(code, data);
+  } catch (e) {
+    console.error("lookupRequest failed", e);
+    els.requestResult.innerHTML = `<p class="empty">조회 실패: ${escapeHTML(e.message || String(e))}</p>`;
+  }
+}
+
+function renderRequestResult(code, data) {
+  const status = data.status || "pending";
+  const statusLabel = { pending: "대기 중", completed: "판매 완료", cancelled: "취소" }[status] || status;
+  const created = data.createdAt && data.createdAt.toDate ? data.createdAt.toDate() : null;
+  const reqItems = Array.isArray(data.items) ? data.items : [];
+
+  const stockWarning = [];
+  const rows = reqItems.map((it) => {
+    const cur = items.get(normalizeKey(it.key));
+    const stock = cur ? parseInt0(cur.qty) : 0;
+    const insufficient = stock < (it.qty || 0);
+    if (insufficient) stockWarning.push(`${it.no} (요청 ${it.qty} / 재고 ${stock})`);
+    const stateBadge = it.state != null
+      ? `<span class="state-badge ${stateClass(it.state)}">${it.state}<small>/10</small></span>`
+      : "";
+    return `
+      <tr>
+        <td class="mono">${escapeHTML(it.no)}</td>
+        <td>${escapeHTML(it.name || "")}${cur ? "" : ' <span class="missing-tag">삭제됨</span>'}</td>
+        <td>${stateBadge}</td>
+        <td class="num">${formatWon(it.value || 0)}</td>
+        <td class="num">${(it.qty || 0).toLocaleString("ko-KR")}${insufficient ? ` <span class="missing-tag">재고 ${stock}</span>` : ""}</td>
+        <td class="num">${formatWon((it.value || 0) * (it.qty || 0))}</td>
+      </tr>
+    `;
+  }).join("");
+
+  const canComplete = status === "pending" && stockWarning.length === 0 && reqItems.length > 0;
+  const actions = status === "pending"
+    ? `
+      <button class="btn btn-primary" id="request-complete" type="button" ${canComplete ? "" : "disabled"}>판매 완료 처리</button>
+      <button class="btn btn-danger" id="request-cancel" type="button">거절</button>
+    `
+    : `<span class="data-status">처리 완료된 요청입니다.</span>`;
+
+  els.requestResult.innerHTML = `
+    <div class="request-summary">
+      <div class="request-summary-head">
+        <span class="request-code">${escapeHTML(code)}</span>
+        <span class="request-status request-status-${status}">${statusLabel}</span>
+        ${created ? `<span class="request-time">${created.toLocaleString("ko-KR")}</span>` : ""}
+      </div>
+      ${stockWarning.length > 0 ? `<div class="request-warning">⚠️ 재고 부족: ${escapeHTML(stockWarning.join(", "))}</div>` : ""}
+      <div class="table-wrap">
+        <table class="request-table">
+          <thead>
+            <tr>
+              <th>일련번호</th>
+              <th>카드명</th>
+              <th>상태</th>
+              <th class="num">단가</th>
+              <th class="num">수량</th>
+              <th class="num">합계</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+          <tfoot>
+            <tr>
+              <td colspan="4" class="num"><strong>합계</strong></td>
+              <td class="num"><strong>${(data.totalQty || 0).toLocaleString("ko-KR")}장</strong></td>
+              <td class="num"><strong>${formatWon(data.totalValue || 0)}</strong></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div class="request-actions">${actions}</div>
+    </div>
+  `;
+
+  const completeBtn = document.getElementById("request-complete");
+  const cancelBtn = document.getElementById("request-cancel");
+  if (completeBtn) completeBtn.addEventListener("click", () => completeRequest(code, data));
+  if (cancelBtn) cancelBtn.addEventListener("click", () => cancelRequest(code));
+}
+
+async function completeRequest(code, data) {
+  if (!isOwner(currentUser)) return;
+  const reqItems = Array.isArray(data.items) ? data.items : [];
+  for (const it of reqItems) {
+    const cur = items.get(normalizeKey(it.key));
+    const stock = cur ? parseInt0(cur.qty) : 0;
+    if (!cur) {
+      showToast(`삭제된 카드: ${it.no}`, "error");
+      return;
+    }
+    if (stock < (it.qty || 0)) {
+      showToast(`재고 부족: ${it.no} (요청 ${it.qty} / 재고 ${stock})`, "error");
+      return;
+    }
+  }
+  if (!confirm(`총 ${data.totalQty}장 / ${formatWon(data.totalValue)} 판매로 처리할까요? 재고가 차감됩니다.`)) return;
+  try {
+    for (const it of reqItems) {
+      const k = normalizeKey(it.key);
+      const cur = items.get(k);
+      if (!cur) continue;
+      const newQty = Math.max(0, parseInt0(cur.qty) - (it.qty || 0));
+      if (newQty === 0) items.delete(k);
+      else items.set(k, { ...cur, qty: newQty });
+    }
+    await saveInventory();
+    await setDoc(doc(db, "requests", code), {
+      status: "completed",
+      completedAt: serverTimestamp(),
+      completedBy: currentUser.email || null,
+    }, { merge: true });
+    showToast(`${code} 요청 판매 처리 완료`, "success");
+    await lookupRequest(code);
+    renderAll();
+  } catch (e) {
+    console.error("completeRequest failed", e);
+    showToast("처리 실패: " + (e.message || e), "error");
+  }
+}
+
+async function cancelRequest(code) {
+  if (!isOwner(currentUser)) return;
+  if (!confirm(`${code} 요청을 거절(취소) 처리할까요? 재고는 변하지 않습니다.`)) return;
+  try {
+    await setDoc(doc(db, "requests", code), {
+      status: "cancelled",
+      cancelledAt: serverTimestamp(),
+      cancelledBy: currentUser.email || null,
+    }, { merge: true });
+    showToast(`${code} 요청 거절 처리`, "success");
+    await lookupRequest(code);
+  } catch (e) {
+    console.error("cancelRequest failed", e);
+    showToast("처리 실패: " + (e.message || e), "error");
+  }
 }
 
 // ---------- Mutations ----------
@@ -1333,10 +1751,69 @@ els.inventoryTable.querySelectorAll("th.sortable").forEach((th) => {
 
 if (els.cardGrid) {
   els.cardGrid.addEventListener("click", (e) => {
+    const cartBtn = e.target.closest("[data-cart-act='add']");
+    if (cartBtn) {
+      e.stopPropagation();
+      addToCart(cartBtn.dataset.key, 1);
+      return;
+    }
     const card = e.target.closest(".market-card[data-key]");
     if (!card) return;
     const entry = items.get(normalizeKey(card.dataset.key));
     if (entry && entry.imageUrl) openLightbox(entry.imageUrl);
+  });
+}
+
+// Cart drawer interactions
+if (els.cartFab) els.cartFab.addEventListener("click", openCartDrawer);
+if (els.cartDrawerClose) els.cartDrawerClose.addEventListener("click", closeCartDrawer);
+if (els.cartBackdrop) els.cartBackdrop.addEventListener("click", closeCartDrawer);
+if (els.cartClear) els.cartClear.addEventListener("click", () => {
+  if (cartCount() === 0) return;
+  if (confirm("장바구니를 비울까요?")) clearCart();
+});
+if (els.cartSubmit) els.cartSubmit.addEventListener("click", submitPurchaseRequest);
+if (els.cartDrawerBody) {
+  els.cartDrawerBody.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-cart-act]");
+    if (!btn) return;
+    const key = btn.dataset.key;
+    const act = btn.dataset.cartAct;
+    if (act === "inc") addToCart(key, 1);
+    else if (act === "dec") addToCart(key, -1);
+    else if (act === "remove") removeFromCart(key);
+  });
+  els.cartDrawerBody.addEventListener("change", (e) => {
+    const input = e.target.closest(".cart-qty-input");
+    if (!input) return;
+    setCartQty(input.dataset.key, input.value);
+  });
+}
+
+// Code modal
+if (els.codeClose) els.codeClose.addEventListener("click", closeCodeModal);
+if (els.codeModalBackdrop) els.codeModalBackdrop.addEventListener("click", closeCodeModal);
+if (els.codeCopy) els.codeCopy.addEventListener("click", async () => {
+  const code = els.codeDisplay.textContent.trim();
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    showToast("코드가 복사되었습니다.", "success");
+  } catch (e) {
+    showToast("복사 실패. 직접 선택해 주세요.", "error");
+  }
+});
+
+// Admin: request lookup
+if (els.requestForm) {
+  els.requestForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    lookupRequest(els.requestCodeInput.value);
+  });
+}
+if (els.requestCodeInput) {
+  els.requestCodeInput.addEventListener("input", (e) => {
+    e.target.value = e.target.value.toUpperCase();
   });
 }
 
@@ -1380,7 +1857,10 @@ els.imageInput.addEventListener("change", async (e) => {
 els.lightboxBackdrop.addEventListener("click", closeLightbox);
 els.lightboxClose.addEventListener("click", closeLightbox);
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !els.lightbox.hidden) closeLightbox();
+  if (e.key !== "Escape") return;
+  if (!els.lightbox.hidden) { closeLightbox(); return; }
+  if (els.codeModal && !els.codeModal.hidden) { closeCodeModal(); return; }
+  if (els.cartDrawer && !els.cartDrawer.hidden) { closeCartDrawer(); return; }
 });
 
 window.addEventListener("online", refreshSyncStatus);
@@ -1407,3 +1887,4 @@ onAuthStateChanged(auth, (user) => {
 // Initial public read attempt even before auth state resolves.
 attachInventoryListener();
 renderAll();
+renderCart();
