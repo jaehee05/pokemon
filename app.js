@@ -1126,7 +1126,7 @@ async function uploadCardImage(key, file) {
   showToast(imageAutoFormat ? "사진 자동 정렬 중…" : "이미지 업로드 중…");
   try {
     const blob = imageAutoFormat
-      ? await formatCardImage(file, { outputSize: 1000, cardSizeRatio: 0.65 })
+      ? await formatCardImage(file, { outputSize: 1000, cardSizeRatio: 0.5 })
       : await resizeImage(file, 900, 0.85);
     const path = `cards/${safeStoragePath(k)}.jpg`;
     const ref = storageRef(storage, path);
