@@ -20,16 +20,16 @@
         </div>
         <h1>포켓몬 카드 인벤토리</h1>
         <p class="subtitle">
-          일련번호 · 카드명 · 등급 · 가치 · 보유 수량을 한 곳에서 관리하고, 총 가치를 실시간으로 확인하세요.
+          보유 중인 포켓몬 카드의 가격과 재고를 한눈에 확인하세요.
         </p>
       </div>
       <div class="hero-actions">
-        <div class="sync-badge" id="sync-badge" data-state="connecting" title="동기화 상태">
+        <div class="sync-badge" id="sync-badge" data-state="connecting" title="동기화 상태" data-owner-only>
           <span class="sync-dot"></span>
           <span class="sync-text">연결 중…</span>
         </div>
         <div class="auth-area" id="auth-area">
-          <button class="btn btn-light" id="login-btn" type="button" disabled>로그인 준비 중…</button>
+          <button class="btn btn-light" id="login-btn" type="button" disabled>관리자</button>
         </div>
       </div>
     </div>
@@ -42,10 +42,10 @@
         <span class="stat-value" id="stat-types">0</span>
       </div>
       <div class="stat">
-        <span class="stat-label">총 보유 매수</span>
+        <span class="stat-label">총 수량</span>
         <span class="stat-value" id="stat-qty">0</span>
       </div>
-      <div class="stat stat-primary">
+      <div class="stat stat-primary" data-owner-only>
         <span class="stat-label">총 가치</span>
         <span class="stat-value" id="stat-value">₩0</span>
       </div>
@@ -93,8 +93,9 @@
     <section class="panel" id="inventory-panel">
       <div class="panel-header">
         <div>
-          <h2>보유 카드 목록</h2>
-          <p class="panel-sub">셀을 클릭하면 바로 수정할 수 있습니다. 컬럼 헤더를 클릭하면 정렬됩니다.</p>
+          <h2>카드 목록</h2>
+          <p class="panel-sub" data-owner-only>셀을 클릭하면 바로 수정할 수 있습니다. 컬럼 헤더를 클릭하면 정렬됩니다.</p>
+          <p class="panel-sub" data-buyer-only>검색하거나 등급 칩, 컬럼 헤더로 정렬해 카드를 살펴보세요.</p>
         </div>
         <span class="data-status" id="inventory-count">0건</span>
       </div>
@@ -134,8 +135,8 @@
               <th class="sortable" data-sort="no">일련번호 <span class="sort-ind"></span></th>
               <th class="sortable" data-sort="name">카드명 <span class="sort-ind"></span></th>
               <th class="sortable" data-sort="grade">등급 <span class="sort-ind"></span></th>
-              <th class="sortable num" data-sort="value">가치 <span class="sort-ind"></span></th>
-              <th class="sortable num" data-sort="qty">보유 <span class="sort-ind"></span></th>
+              <th class="sortable num" data-sort="value">가격 <span class="sort-ind"></span></th>
+              <th class="sortable num" data-sort="qty">재고 <span class="sort-ind"></span></th>
               <th class="sortable num" data-sort="total">합계 <span class="sort-ind"></span></th>
               <th data-owner-only></th>
             </tr>
@@ -148,7 +149,7 @@
   </main>
 
   <footer>
-    <p>데이터는 Firebase Firestore에 안전하게 저장되며, 오프라인일 때도 사용할 수 있습니다.</p>
+    <p data-owner-only>데이터는 Firebase Firestore에 안전하게 저장되며, 오프라인일 때도 사용할 수 있습니다.</p>
   </footer>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>

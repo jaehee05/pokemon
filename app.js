@@ -509,7 +509,7 @@ function renderAuthArea() {
     const logoutBtn = document.getElementById("logout-btn");
     if (logoutBtn) logoutBtn.addEventListener("click", handleLogout);
   } else {
-    area.innerHTML = `<button class="btn btn-light" id="login-btn" type="button">관리자 로그인</button>`;
+    area.innerHTML = `<button class="btn btn-light" id="login-btn" type="button">관리자</button>`;
     const loginBtn = document.getElementById("login-btn");
     if (loginBtn) loginBtn.addEventListener("click", handleLogin);
   }

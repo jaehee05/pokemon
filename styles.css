@@ -178,8 +178,12 @@ code {
   border-color: transparent;
 }
 
-/* Owner-only visibility (default = readonly: hide owner-only elements) */
+/* Owner-only / buyer-only visibility */
 body.is-readonly [data-owner-only] { display: none !important; }
+body.is-owner [data-buyer-only] { display: none !important; }
+
+/* Adjust stats grid when total-value stat is hidden in readonly mode */
+body.is-readonly .stats { grid-template-columns: repeat(2, 1fr); }
 
 /* Sync badge */
 .sync-badge {
