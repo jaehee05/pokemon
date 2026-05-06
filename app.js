@@ -1490,21 +1490,62 @@ async function cropForOCR(file) {
   });
 }
 
+async function invertImage(blob) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("파일 읽기 실패"));
+    reader.readAsDataURL(blob);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error("이미지 로드 실패"));
+    im.src = dataUrl;
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = data.data;
+  for (let i = 0; i < pixels.length; i += 4) {
+    pixels[i] = 255 - pixels[i];
+    pixels[i + 1] = 255 - pixels[i + 1];
+    pixels[i + 2] = 255 - pixels[i + 2];
+  }
+  ctx.putImageData(data, 0, 0);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("invert toBlob 실패"))),
+      "image/png",
+    );
+  });
+}
+
 async function runOCR(file) {
   const T = await loadTesseract();
   showToast("일련번호 인식 중…");
-  let target = file;
+  let target;
   try {
     target = await cropForOCR(file);
   } catch (e) {
     console.warn("OCR crop failed, using original", e);
     target = file;
   }
-  const result = await T.recognize(target, "eng", {
+  const ocrParams = {
     tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/-",
     logger: () => {},
-  });
-  const text = result?.data?.text || "";
+  };
+  // 카드의 일부 텍스트 (예: SV10) 는 흰글자/검정배경의 반전 표기.
+  // 원본과 반전 모두 OCR 후 결과를 합쳐서 일련번호 추출.
+  let inverted = null;
+  try { inverted = await invertImage(target); } catch (e) { console.warn("invert failed", e); }
+  const tasks = [T.recognize(target, "eng", ocrParams)];
+  if (inverted) tasks.push(T.recognize(inverted, "eng", ocrParams));
+  const results = await Promise.all(tasks);
+  const text = results.map((r) => r?.data?.text || "").join("\n");
   return { text, serial: extractSerial(text) };
 }
 
