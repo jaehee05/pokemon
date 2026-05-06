@@ -83,7 +83,7 @@
           <option value="SAR">SAR</option>
           <option value="UR">UR</option>
         </select>
-        <input type="number" id="card-state" min="0" max="10" step="1" placeholder="상태" aria-label="상태 (0-10점)" />
+        <input type="number" id="card-state" min="0" max="10" step="1" value="10" placeholder="상태" aria-label="상태 (0-10점)" />
         <input type="number" id="card-value" min="0" step="100" placeholder="가치(원)" />
         <input type="number" id="card-qty" min="1" step="1" value="1" aria-label="수량" />
         <button class="btn btn-primary" type="submit">추가</button>
@@ -110,6 +110,13 @@
           id="inventory-search"
           placeholder="일련번호 또는 카드명 검색"
         />
+        <select class="sort-select-buyer" id="sort-select" data-buyer-only aria-label="정렬">
+          <option value="no|1">기본 정렬</option>
+          <option value="state|-1">상태 높은 순</option>
+          <option value="value|-1">가격 높은 순</option>
+          <option value="value|1">가격 낮은 순</option>
+          <option value="qty|-1">재고 많은 순</option>
+        </select>
         <div class="action-spacer"></div>
         <label class="btn" data-owner-only>
           <span>CSV 가져오기</span>
@@ -129,7 +136,7 @@
         </div>
       </div>
 
-      <div class="table-wrap">
+      <div class="table-wrap" data-owner-only>
         <table id="inventory-table">
           <thead>
             <tr>
@@ -145,8 +152,9 @@
           </thead>
           <tbody id="inventory-body"></tbody>
         </table>
-        <p class="empty" id="inventory-empty">아직 등록된 카드가 없습니다.</p>
       </div>
+      <div class="card-grid" id="card-grid" data-buyer-only></div>
+      <p class="empty" id="inventory-empty">아직 등록된 카드가 없습니다.</p>
     </section>
   </main>
 

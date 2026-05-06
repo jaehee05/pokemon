@@ -68,6 +68,8 @@ const els = {
   inventoryClear: $("inventory-clear"),
   inventoryCount: $("inventory-count"),
   inventoryTable: $("inventory-table"),
+  cardGrid: $("card-grid"),
+  sortSelect: $("sort-select"),
   exportBtn: $("export-btn"),
 
   gradeFilter: $("grade-filter"),
@@ -696,12 +698,12 @@ function renderInventory() {
     );
   }
 
-  for (const r of filtered) {
-    const total = (r.qty || 0) * (r.value || 0);
-    const tr = document.createElement("tr");
-    tr.dataset.key = r.key;
-    const thumbCell = thumbCellHTML(r, owner);
-    if (owner) {
+  if (owner) {
+    for (const r of filtered) {
+      const total = (r.qty || 0) * (r.value || 0);
+      const tr = document.createElement("tr");
+      tr.dataset.key = r.key;
+      const thumbCell = thumbCellHTML(r, true);
       tr.innerHTML = `
         <td class="thumb-cell">${thumbCell}</td>
         <td class="mono">${escapeHTML(r.no)}</td>
@@ -718,20 +720,13 @@ function renderInventory() {
         <td class="num total-cell">${formatWon(total)}</td>
         <td><button class="icon-btn danger" data-act="remove" title="삭제">×</button></td>
       `;
-    } else {
-      tr.innerHTML = `
-        <td class="thumb-cell">${thumbCell}</td>
-        <td class="mono">${escapeHTML(r.no)}</td>
-        <td>${escapeHTML(r.name || "") || '<span class="cell-empty">이름 없음</span>'}</td>
-        <td><span class="state-badge ${stateClass(r.state)}">${r.state == null ? "—" : `${r.state}<small>/10</small>`}</span></td>
-        <td class="num">${formatWon(r.value || 0)}</td>
-        <td class="num">${(r.qty || 0).toLocaleString("ko-KR")}</td>
-        <td class="num total-cell">${formatWon(total)}</td>
-      `;
+      tbody.appendChild(tr);
     }
-    tbody.appendChild(tr);
+  } else {
+    renderBuyerCards(filtered);
   }
 
+  syncSortSelect();
   els.inventoryCount.textContent = `${filtered.length.toLocaleString("ko-KR")} / ${items.size.toLocaleString("ko-KR")}건`;
 
   if (items.size === 0) {
@@ -753,6 +748,53 @@ function renderInventory() {
       th.classList.add(sortDir === 1 ? "sort-asc" : "sort-desc");
     }
   });
+}
+
+function renderBuyerCards(filtered) {
+  const grid = els.cardGrid;
+  if (!grid) return;
+  grid.innerHTML = "";
+  for (const r of filtered) {
+    const card = document.createElement("article");
+    card.className = "market-card";
+    card.dataset.key = r.key;
+    if (r.imageUrl) card.classList.add("has-image");
+    if (!r.qty) card.classList.add("sold-out");
+
+    const overlays = `
+      ${r.state != null ? `<span class="market-card-state state-badge ${stateClass(r.state)}">${r.state}<small>/10</small></span>` : ""}
+      ${r.qty > 0
+        ? `<span class="market-card-stock-badge">재고 ${r.qty}</span>`
+        : `<span class="market-card-stock-badge sold-out">품절</span>`}
+    `;
+
+    const imageBlock = r.imageUrl
+      ? `<div class="market-card-image">
+           ${overlays}
+           <img src="${escapeAttr(r.imageUrl)}${r.imageUpdatedAt ? `?t=${r.imageUpdatedAt}` : ""}" loading="lazy" alt="${escapeAttr(r.name || r.no)}" />
+         </div>`
+      : `<div class="market-card-image market-card-image-empty">
+           ${overlays}
+           <span>사진 준비 중</span>
+         </div>`;
+
+    card.innerHTML = `
+      ${imageBlock}
+      <div class="market-card-body">
+        <span class="market-card-no">${escapeHTML(r.no)}</span>
+        <h3 class="market-card-title">${escapeHTML(r.name || "이름 미등록")}</h3>
+        <div class="market-card-price">${formatWon(r.value || 0)}</div>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+}
+
+function syncSortSelect() {
+  if (!els.sortSelect) return;
+  const v = `${sortKey}|${sortDir}`;
+  const opt = Array.from(els.sortSelect.options).find((o) => o.value === v);
+  els.sortSelect.value = opt ? v : "no|1";
 }
 
 function thumbCellHTML(r, owner) {
@@ -901,7 +943,7 @@ async function upsertCard({ no, name, grade, state, value, qty }, mode = "merge"
     no: trimmedNo,
     name: name != null && name !== "" ? String(name).trim() : (existing ? existing.name : ""),
     grade: grade != null && grade !== "" ? normalizeGrade(grade) : (existing ? existing.grade : ""),
-    state: incomingState != null ? incomingState : (existing ? (existing.state ?? null) : null),
+    state: incomingState != null ? incomingState : (existing ? (existing.state ?? null) : 10),
     value: value != null && value !== "" ? parseInt0(value) : (existing ? existing.value : 0),
     qty: 0,
   };
@@ -1110,7 +1152,7 @@ els.addForm.addEventListener("submit", async (e) => {
     els.cardNo.value = "";
     els.cardName.value = "";
     els.cardGrade.value = "";
-    els.cardState.value = "";
+    els.cardState.value = "10";
     els.cardValue.value = "";
     els.cardQty.value = "1";
     els.suggestions.classList.add("hidden");
@@ -1288,6 +1330,25 @@ els.inventoryTable.querySelectorAll("th.sortable").forEach((th) => {
     renderInventory();
   });
 });
+
+if (els.cardGrid) {
+  els.cardGrid.addEventListener("click", (e) => {
+    const card = e.target.closest(".market-card[data-key]");
+    if (!card) return;
+    const entry = items.get(normalizeKey(card.dataset.key));
+    if (entry && entry.imageUrl) openLightbox(entry.imageUrl);
+  });
+}
+
+if (els.sortSelect) {
+  els.sortSelect.addEventListener("change", () => {
+    const v = els.sortSelect.value;
+    const [k, d] = v.split("|");
+    sortKey = k;
+    sortDir = parseInt(d, 10) || 1;
+    renderInventory();
+  });
+}
 
 els.gradeFilter.addEventListener("click", (e) => {
   const chip = e.target.closest(".chip");

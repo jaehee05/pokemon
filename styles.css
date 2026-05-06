@@ -857,6 +857,138 @@ td .value-input:focus, td .qty-input:focus {
 .thumb-btn.danger { color: var(--danger); }
 .thumb-btn.danger:hover { background: #fff; color: var(--danger-hover); }
 
+/* Marketplace card grid (buyer view) */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+@media (max-width: 540px) {
+  .card-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+}
+
+.market-card {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+}
+.market-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  border-color: var(--border-strong);
+}
+.market-card.has-image { cursor: zoom-in; }
+.market-card.sold-out .market-card-price { color: var(--muted); text-decoration: line-through; }
+
+.market-card-image {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.market-card-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 250ms ease;
+}
+.market-card:hover .market-card-image img {
+  transform: scale(1.04);
+}
+.market-card-image-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  background:
+    repeating-linear-gradient(45deg,
+      var(--surface-2),
+      var(--surface-2) 10px,
+      #ffffff 10px,
+      #ffffff 20px);
+}
+
+.market-card-state {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.18);
+}
+.market-card-stock-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(2px);
+}
+.market-card-stock-badge.sold-out {
+  background: var(--danger);
+}
+
+.market-card-body {
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.market-card-no {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.market-card-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  margin: 0;
+  line-height: 1.3;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 38px;
+}
+.market-card-price {
+  margin-top: 4px;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+/* Sort select (buyer) */
+.sort-select-buyer {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  font-size: 13.5px;
+  background: #fff;
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+}
+.sort-select-buyer:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(79, 92, 238, 0.15);
+}
+
 /* Lightbox */
 .lightbox {
   position: fixed;
