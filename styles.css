@@ -940,6 +940,21 @@ select.state-input.st-none { background-color: transparent; color: var(--muted);
   color: var(--muted);
   margin: 4px 0 0;
 }
+.usage-subhead {
+  font-weight: 700;
+  color: var(--text);
+  margin: 12px 0 6px !important;
+}
+.usage-steps {
+  margin: 0 0 12px;
+  padding-left: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-soft);
+}
+.usage-steps li { line-height: 1.6; }
+.usage-steps li::marker { color: var(--primary); font-weight: 700; }
 
 /* Set chip (확장팩 라벨) */
 .set-chip {
