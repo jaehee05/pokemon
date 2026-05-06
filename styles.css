@@ -992,14 +992,14 @@ td.no-cell .no-text { vertical-align: middle; }
 
 .market-card-image {
   position: relative;
-  aspect-ratio: 4 / 5;
-  background: #ffffff;
+  aspect-ratio: 5 / 7;
+  background: var(--surface-2);
   overflow: hidden;
 }
 .market-card-image img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
   display: block;
   transition: transform 250ms ease;
 }
@@ -1014,8 +1014,8 @@ td.no-cell .no-text { vertical-align: middle; }
   font-size: 12.5px;
   background:
     repeating-linear-gradient(45deg,
-      #f4f5fa,
-      #f4f5fa 10px,
+      var(--surface-2),
+      var(--surface-2) 10px,
       #ffffff 10px,
       #ffffff 20px);
 }
