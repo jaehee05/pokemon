@@ -6,6 +6,8 @@
 - **공개 읽기 / 관리자 쓰기**: 누구나 인벤토리 카드 목록을 볼 수 있고, 관리자(화이트리스트 이메일)만 추가/수정/삭제 가능
 - Google 로그인 (팝업) — 관리자만 편집 UI 활성화
 - Firestore 실시간 동기화 + 오프라인 지속 캐시(IndexedDB)
+- **카드별 사진 업로드** (Firebase Storage) + 클릭 시 라이트박스 확대
+- 클라이언트 측 이미지 리사이즈 (가로/세로 최대 900px, JPEG 0.85)로 저장 비용 최소화
 - 기존 데이터(`/users/{uid}/data/inventory`, `catalog/collection`, localStorage)는 첫 관리자 로그인 시 자동으로 `/public/inventory`로 이전됩니다
 
 ## 주요 기능
@@ -36,13 +38,17 @@
 2. **Authentication → Sign-in method**에서 **Google** 제공업체를 활성화합니다.
 3. **Firestore Database**를 **Native 모드**로 생성합니다 (지역은 가까운 곳, 예: `asia-northeast3`).
 4. **Firestore → Rules** 탭에 `firestore.rules`의 내용을 그대로 붙여넣고 **게시**합니다.
-5. **Authentication → Settings → 승인된 도메인**에 다음을 추가합니다.
+5. **Storage** 메뉴에서 기본 버킷을 활성화합니다.
+   - 카드 이미지 저장에 사용됩니다.
+   - 신규 프로젝트는 Blaze(종량) 요금제로 업그레이드가 필요할 수 있습니다 (사용량 무료 한도 내라면 비용 0원).
+6. **Storage → Rules** 탭에 `storage.rules`의 내용을 그대로 붙여넣고 **게시**합니다.
+7. **Authentication → Settings → 승인된 도메인**에 다음을 추가합니다.
    - `localhost`
    - 배포된 Vercel 도메인 (예: `your-app.vercel.app`)
 
 ### 관리자 이메일 등록 (중요)
 
-관리자만 인벤토리를 수정할 수 있도록, 다음 두 곳에 본인의 Google 이메일을 동일하게 추가하세요.
+관리자만 인벤토리를 수정할 수 있도록, 다음 **세 곳**에 본인의 Google 이메일을 동일하게 추가하세요.
 
 1. **`firebase.js`**
    ```js
@@ -50,19 +56,10 @@
      "your-email@gmail.com",
    ];
    ```
-2. **`firestore.rules`** 의 `isOwner()` 함수
-   ```
-   function isOwner() {
-     return request.auth != null
-       && request.auth.token.email_verified == true
-       && request.auth.token.email in [
-         'your-email@gmail.com',
-       ];
-   }
-   ```
-   변경 후 Firestore Rules 콘솔에서 다시 **게시(Publish)**.
+2. **`firestore.rules`** 의 `isOwner()` 함수 → Firestore Rules 콘솔 게시
+3. **`storage.rules`** 의 화이트리스트 → Storage Rules 콘솔 게시
 
-> 두 곳 중 하나라도 비어 있으면 동작이 어긋납니다. 클라이언트에서는 관리자처럼 보여도 서버에서 쓰기가 거부됩니다.
+> 셋 중 하나라도 비어 있으면 동작이 어긋납니다. 클라이언트에서는 관리자처럼 보여도 서버 쓰기/이미지 업로드가 거부됩니다.
 
 ### 동작 모드
 

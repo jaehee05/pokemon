@@ -115,7 +115,7 @@
           <input type="file" id="csv-file" accept=".csv,.tsv,.txt" hidden />
         </label>
         <button class="btn" id="paste-toggle" type="button" data-owner-only>붙여넣기</button>
-        <button class="btn btn-ghost" id="export-btn" type="button">CSV 내보내기</button>
+        <button class="btn btn-ghost" id="export-btn" type="button" data-owner-only>CSV 내보내기</button>
         <button class="btn btn-danger" id="inventory-clear" type="button" data-owner-only>전체 삭제</button>
       </div>
 
@@ -132,6 +132,7 @@
         <table id="inventory-table">
           <thead>
             <tr>
+              <th class="th-thumb">사진</th>
               <th class="sortable" data-sort="no">일련번호 <span class="sort-ind"></span></th>
               <th class="sortable" data-sort="name">카드명 <span class="sort-ind"></span></th>
               <th class="sortable" data-sort="grade">등급 <span class="sort-ind"></span></th>
@@ -153,6 +154,14 @@
   </footer>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <input type="file" id="image-input" accept="image/*" hidden />
+
+  <div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="카드 이미지">
+    <div class="lightbox-backdrop" id="lightbox-backdrop"></div>
+    <button class="lightbox-close" id="lightbox-close" type="button" aria-label="닫기">×</button>
+    <img class="lightbox-img" id="lightbox-img" alt="" />
+  </div>
 
   <script type="module" src="./app.js"></script>
 </body>

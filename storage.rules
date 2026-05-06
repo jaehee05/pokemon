@@ -1,0 +1,16 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // 카드 이미지: 누구나 읽기, 관리자만 쓰기
+    // (firestore.rules 의 isOwner() 와 동일한 이메일 화이트리스트 유지)
+    match /cards/{filename} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'jaehee05@kakao.com',
+        ];
+    }
+  }
+}

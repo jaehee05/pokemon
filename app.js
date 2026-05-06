@@ -1,4 +1,4 @@
-import { auth, db, googleProvider, OWNER_EMAILS } from "./firebase.js";
+import { auth, db, storage, googleProvider, OWNER_EMAILS } from "./firebase.js";
 import {
   signInWithPopup,
   signOut,
@@ -11,6 +11,12 @@ import {
   onSnapshot,
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+import {
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+  deleteObject,
+} from "https://www.gstatic.com/firebasejs/11.0.2/firebase-storage.js";
 
 // ---------- State ----------
 let currentUser = null;
@@ -74,7 +80,15 @@ const els = {
   toast: $("toast"),
 
   authArea: $("auth-area"),
+
+  imageInput: $("image-input"),
+  lightbox: $("lightbox"),
+  lightboxImg: $("lightbox-img"),
+  lightboxClose: $("lightbox-close"),
+  lightboxBackdrop: $("lightbox-backdrop"),
 };
+
+let currentUploadKey = null;
 
 // ---------- Helpers ----------
 function normalizeKey(s) {
@@ -653,8 +667,10 @@ function renderInventory() {
     const total = (r.qty || 0) * (r.value || 0);
     const tr = document.createElement("tr");
     tr.dataset.key = r.key;
+    const thumbCell = thumbCellHTML(r, owner);
     if (owner) {
       tr.innerHTML = `
+        <td class="thumb-cell">${thumbCell}</td>
         <td class="mono">${escapeHTML(r.no)}</td>
         <td><span class="cell-edit" data-field="name" tabindex="0">${escapeHTML(r.name || "")}<span class="cell-empty">${r.name ? "" : "이름 없음"}</span></span></td>
         <td>
@@ -664,11 +680,11 @@ function renderInventory() {
             ${r.grade && !GRADE_ORDER.includes(r.grade) ? `<option value="${escapeAttr(r.grade)}" selected>${escapeHTML(r.grade)}</option>` : ""}
           </select>
         </td>
-        <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가치" /></td>
+        <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가격" /></td>
         <td class="num">
           <div class="qty-cell">
             <button class="icon-btn" data-act="dec" title="−1">−</button>
-            <input type="number" class="qty-input" data-field="qty" min="0" step="1" value="${r.qty || 0}" aria-label="보유 수량" />
+            <input type="number" class="qty-input" data-field="qty" min="0" step="1" value="${r.qty || 0}" aria-label="재고" />
             <button class="icon-btn" data-act="inc" title="+1">+</button>
           </div>
         </td>
@@ -677,6 +693,7 @@ function renderInventory() {
       `;
     } else {
       tr.innerHTML = `
+        <td class="thumb-cell">${thumbCell}</td>
         <td class="mono">${escapeHTML(r.no)}</td>
         <td>${escapeHTML(r.name || "") || '<span class="cell-empty">이름 없음</span>'}</td>
         <td>${r.grade ? `<span class="grade-badge ${gradeClass(r.grade)}">${escapeHTML(r.grade)}</span>` : '<span class="grade-badge g-none">—</span>'}</td>
@@ -709,6 +726,136 @@ function renderInventory() {
       th.classList.add(sortDir === 1 ? "sort-asc" : "sort-desc");
     }
   });
+}
+
+function thumbCellHTML(r, owner) {
+  const url = r.imageUrl;
+  if (url) {
+    const cacheBust = r.imageUpdatedAt ? `?t=${r.imageUpdatedAt}` : "";
+    const imgHtml = `<img src="${escapeAttr(url)}${cacheBust}" loading="lazy" alt="${escapeAttr(r.name || r.no)}" />`;
+    if (owner) {
+      return `<div class="thumb has-image" data-img-action="view" title="크게 보기">
+        ${imgHtml}
+        <div class="thumb-actions">
+          <button class="thumb-btn" data-img-action="upload" type="button" title="사진 변경">↺</button>
+          <button class="thumb-btn danger" data-img-action="delete" type="button" title="사진 제거">×</button>
+        </div>
+      </div>`;
+    }
+    return `<div class="thumb has-image" data-img-action="view" title="크게 보기">${imgHtml}</div>`;
+  }
+  if (owner) {
+    return `<button class="thumb thumb-add" data-img-action="upload" type="button" title="사진 업로드">＋</button>`;
+  }
+  return `<div class="thumb thumb-empty">—</div>`;
+}
+
+// ---------- Images ----------
+async function resizeImage(file, maxDim = 900, quality = 0.85) {
+  if (!file.type || !file.type.startsWith("image/")) {
+    throw new Error("이미지 파일이 아닙니다.");
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("파일 읽기 실패"));
+    reader.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error("이미지 로드 실패 (HEIC 등 미지원 포맷일 수 있음)"));
+    im.src = dataUrl;
+  });
+  let { width, height } = img;
+  if (width > maxDim || height > maxDim) {
+    if (width > height) { height = Math.round((height * maxDim) / width); width = maxDim; }
+    else { width = Math.round((width * maxDim) / height); height = maxDim; }
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, width, height);
+  return await new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("이미지 변환 실패"))),
+      "image/jpeg",
+      quality,
+    );
+  });
+}
+
+function safeStoragePath(key) {
+  return String(key).replace(/[^a-z0-9-]/g, "_");
+}
+
+async function uploadCardImage(key, file) {
+  if (!isOwner(currentUser)) {
+    showToast("관리자만 업로드할 수 있습니다.", "error");
+    return;
+  }
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  showToast("이미지 업로드 중…");
+  try {
+    const blob = await resizeImage(file, 900, 0.85);
+    const path = `cards/${safeStoragePath(k)}.jpg`;
+    const ref = storageRef(storage, path);
+    await uploadBytes(ref, blob, {
+      contentType: "image/jpeg",
+      cacheControl: "public, max-age=31536000",
+    });
+    const url = await getDownloadURL(ref);
+    items.set(k, { ...entry, imageUrl: url, imagePath: path, imageUpdatedAt: Date.now() });
+    await saveInventory();
+    renderAll();
+    showToast("이미지가 업로드되었습니다.", "success");
+  } catch (err) {
+    console.error("image upload failed", err);
+    showToast("업로드 실패: " + (err.message || err), "error");
+  }
+}
+
+async function deleteCardImage(key) {
+  if (!isOwner(currentUser)) return;
+  if (!confirm("이미지를 제거할까요?")) return;
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  try {
+    if (entry.imagePath) {
+      try {
+        await deleteObject(storageRef(storage, entry.imagePath));
+      } catch (e) {
+        console.warn("storage delete (non-fatal)", e);
+      }
+    }
+    const next = { ...entry };
+    delete next.imageUrl;
+    delete next.imagePath;
+    delete next.imageUpdatedAt;
+    items.set(k, next);
+    await saveInventory();
+    renderAll();
+    showToast("이미지가 제거되었습니다.", "success");
+  } catch (err) {
+    console.error("image delete failed", err);
+    showToast("실패: " + (err.message || err), "error");
+  }
+}
+
+function openLightbox(url) {
+  if (!url) return;
+  els.lightboxImg.src = url;
+  els.lightbox.hidden = false;
+  document.body.classList.add("lightbox-open");
+}
+function closeLightbox() {
+  els.lightbox.hidden = true;
+  els.lightboxImg.src = "";
+  document.body.classList.remove("lightbox-open");
 }
 
 // ---------- Mutations ----------
@@ -996,10 +1143,32 @@ els.suggestions.addEventListener("mousedown", (e) => {
 });
 
 els.inventoryBody.addEventListener("click", async (e) => {
-  if (!isOwner(currentUser)) return;
   const tr = e.target.closest("tr[data-key]");
   if (!tr) return;
   const key = tr.dataset.key;
+
+  // Image actions: view available to everyone, upload/delete admin only
+  const imgAct = e.target.closest("[data-img-action]");
+  if (imgAct) {
+    e.stopPropagation();
+    const action = imgAct.dataset.imgAction;
+    if (action === "view") {
+      const entry = items.get(normalizeKey(key));
+      if (entry && entry.imageUrl) openLightbox(entry.imageUrl);
+      return;
+    }
+    if (!isOwner(currentUser)) return;
+    if (action === "upload") {
+      currentUploadKey = key;
+      els.imageInput.value = "";
+      els.imageInput.click();
+    } else if (action === "delete") {
+      await deleteCardImage(key);
+    }
+    return;
+  }
+
+  if (!isOwner(currentUser)) return;
   const actBtn = e.target.closest("[data-act]");
   if (actBtn) {
     const act = actBtn.dataset.act;
@@ -1102,6 +1271,21 @@ els.inventoryClear.addEventListener("click", async () => {
   items = new Map();
   renderAll();
   await saveInventory();
+});
+
+els.imageInput.addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  const key = currentUploadKey;
+  currentUploadKey = null;
+  e.target.value = "";
+  if (!file || !key) return;
+  await uploadCardImage(key, file);
+});
+
+els.lightboxBackdrop.addEventListener("click", closeLightbox);
+els.lightboxClose.addEventListener("click", closeLightbox);
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !els.lightbox.hidden) closeLightbox();
 });
 
 window.addEventListener("online", refreshSyncStatus);
