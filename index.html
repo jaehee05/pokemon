@@ -14,10 +14,10 @@
   <header class="hero">
     <div class="hero-inner">
       <div class="hero-text">
-        <div class="brand">
+        <button class="brand" id="brand-btn" type="button" aria-label="PokeStock">
           <span class="logo-dot"></span>
           <span class="brand-name">PokeStock</span>
-        </div>
+        </button>
         <h1>포켓몬 카드 인벤토리</h1>
         <p class="subtitle">
           보유 중인 포켓몬 카드의 가격과 재고를 한눈에 확인하세요.
@@ -28,9 +28,7 @@
           <span class="sync-dot"></span>
           <span class="sync-text">연결 중…</span>
         </div>
-        <div class="auth-area" id="auth-area">
-          <button class="btn btn-light" id="login-btn" type="button" disabled>관리자</button>
-        </div>
+        <div class="auth-area" id="auth-area"></div>
       </div>
     </div>
   </header>
@@ -125,11 +123,11 @@
           placeholder="일련번호 또는 카드명 검색"
         />
         <select class="sort-select-buyer" id="sort-select" data-buyer-only aria-label="정렬">
-          <option value="no|1">기본 정렬</option>
-          <option value="state|-1">상태 높은 순</option>
           <option value="value|-1">가격 높은 순</option>
           <option value="value|1">가격 낮은 순</option>
+          <option value="state|-1">상태 높은 순</option>
           <option value="qty|-1">재고 많은 순</option>
+          <option value="no|1">일련번호 순</option>
         </select>
         <div class="action-spacer"></div>
         <label class="btn" data-owner-only>

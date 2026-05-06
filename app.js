@@ -30,8 +30,8 @@ let migrationAttempted = false;
 let pendingSaves = 0;
 let savingTimer = null;
 
-let sortKey = "no";
-let sortDir = 1; // 1 asc, -1 desc
+let sortKey = "value";
+let sortDir = -1; // 1 asc, -1 desc
 let activeState = ""; // "" = 전체, "__none__" = 미평가, "10".."0" = 정확한 점수
 
 const GRADE_ORDER = ["RR", "SR", "SAR", "UR", "AR", "R", "U", "C"];
@@ -577,9 +577,9 @@ function renderAuthArea() {
     const logoutBtn = document.getElementById("logout-btn");
     if (logoutBtn) logoutBtn.addEventListener("click", handleLogout);
   } else {
-    area.innerHTML = `<button class="btn btn-light" id="login-btn" type="button">관리자</button>`;
-    const loginBtn = document.getElementById("login-btn");
-    if (loginBtn) loginBtn.addEventListener("click", handleLogin);
+    // 비로그인 상태에서는 표시할 UI 없음.
+    // 관리자 로그인은 헤더의 PokeStock 로고를 3연속 클릭하면 호출됩니다.
+    area.innerHTML = "";
   }
 }
 
@@ -1862,6 +1862,22 @@ window.addEventListener("keydown", (e) => {
   if (els.codeModal && !els.codeModal.hidden) { closeCodeModal(); return; }
   if (els.cartDrawer && !els.cartDrawer.hidden) { closeCartDrawer(); return; }
 });
+
+// Hidden admin login: 3연속 클릭 on PokeStock 로고
+const brandBtn = $("brand-btn");
+let brandClicks = [];
+if (brandBtn) {
+  brandBtn.addEventListener("click", () => {
+    if (currentUser) return;
+    const now = Date.now();
+    brandClicks = brandClicks.filter((t) => now - t < 1500);
+    brandClicks.push(now);
+    if (brandClicks.length >= 3) {
+      brandClicks = [];
+      handleLogin();
+    }
+  });
+}
 
 window.addEventListener("online", refreshSyncStatus);
 window.addEventListener("offline", () => setSyncStatus("offline"));
