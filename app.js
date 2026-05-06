@@ -1408,15 +1408,41 @@ function normalizeOcrSerial(setCode, num) {
 
 function extractSerial(text) {
   if (!text) return null;
-  // Strip common confusables
-  const cleaned = text.replace(/O/gi, "0").replace(/[Il|]/g, "1");
+  // Common OCR 혼동 보정 (대문자 O → 0, 숫자 옆 I/l/| → 1, 한글 점 → slash)
+  const cleaned = text
+    .replace(/O/g, "0")
+    .replace(/[Il|](?=\d)/g, "1")
+    .replace(/(?<=\d)[Il|]/g, "1")
+    .replace(/\s*[ㆍ·•]\s*/g, "/");
 
-  // 패턴 1: "sv10 032" / "sv10-032" / "SV11W 005"
+  // ① 확장팩 코드 (sv + 숫자 + 선택 글자) — 텍스트 어디든
+  const setRe = /\bsv\s*(\d+\s*[a-zA-Z]?)\b/i;
+  const setM = cleaned.match(setRe);
+
+  // ② 카드 번호 X/Y (1-4자리, X ≤ Y, Y < 1000) — 텍스트 어디든
+  let chosenX = null;
+  const numRe = /\b(\d{1,4})\s*\/\s*(\d{1,4})\b/g;
+  let m;
+  while ((m = numRe.exec(cleaned)) !== null) {
+    const x = parseInt(m[1], 10);
+    const y = parseInt(m[2], 10);
+    if (x > 0 && y > 0 && x <= y && y < 1000) {
+      chosenX = m[1];
+      break;
+    }
+  }
+
+  // ①+② 조합 (가장 일반적인 케이스: 확장팩 코드와 X/Y가 카드 다른 위치에 있음)
+  if (setM && chosenX) {
+    return normalizeOcrSerial("sv" + setM[1].replace(/\s+/g, ""), chosenX);
+  }
+
+  // 폴백 1: 인접 패턴 "sv10-032" / "sv10 032"
   const re1 = /(sv\d+[a-zA-Z]?)\s*[-_/]?\s*(\d{2,4})/i;
   const m1 = cleaned.match(re1);
   if (m1) return normalizeOcrSerial(m1[1], m1[2]);
 
-  // 패턴 2: "032/198 sv10"
+  // 폴백 2: "032/198 sv10"
   const re2 = /(\d{2,4})\s*\/\s*\d{2,4}\s+(sv\d+[a-zA-Z]?)/i;
   const m2 = cleaned.match(re2);
   if (m2) return normalizeOcrSerial(m2[2], m2[1]);
@@ -1438,8 +1464,17 @@ async function handleOcrFile(file) {
   try {
     const { serial, text } = await runOCR(file);
     if (!serial) {
-      showToast("일련번호를 찾지 못했습니다. 더 선명한 사진으로 다시 시도해 주세요.", "error");
-      console.log("OCR text:", text);
+      const preview = (text || "").replace(/\n+/g, " ").trim().slice(0, 80);
+      showToast(
+        `일련번호를 찾지 못했습니다. ${preview ? `OCR 결과: "${preview}…"` : "사진을 더 선명하게 다시 시도해 주세요."}`,
+        "error",
+      );
+      console.log("OCR full text:", text);
+      pendingOcrFile = file;
+      els.cardPreview.textContent = "📷 사진은 준비됨 (일련번호는 직접 입력 후 추가)";
+      els.cardPreview.classList.add("found");
+      els.cardPreview.classList.remove("error");
+      els.cardNo.focus();
       return;
     }
     els.cardNo.value = serial;
