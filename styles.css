@@ -711,38 +711,46 @@ td .value-input:focus, td .qty-input:focus {
   margin-left: 1px;
   opacity: 0.7;
 }
+.state-badge.st-s    { background: #d3f0dd; color: #16723e; }
+.state-badge.st-a    { background: #d4e7ff; color: #1455a8; }
+.state-badge.st-b    { background: #fde7b8; color: #8a5b07; }
+.state-badge.st-none { background: var(--g-none-bg); color: var(--g-none-fg); }
+/* legacy classes (점수 시절) */
 .state-badge.st-perfect { background: #d3f0dd; color: #16723e; }
 .state-badge.st-good    { background: #d4e7ff; color: #1455a8; }
 .state-badge.st-mid     { background: #fde7b8; color: #8a5b07; }
 .state-badge.st-low     { background: #fcd6cc; color: #9c3119; }
 .state-badge.st-zero    { background: #e9eaee; color: #5a5f72; }
-.state-badge.st-none    { background: var(--g-none-bg); color: var(--g-none-fg); }
 
-.state-input {
-  width: 64px;
+select.state-input {
+  appearance: none;
+  -webkit-appearance: none;
   border: 1px solid transparent;
-  background: transparent;
+  background-color: transparent;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%236e7488' d='M0 0l5 6 5-6z'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
   border-radius: 999px;
-  padding: 3px 10px;
+  padding: 3px 22px 3px 14px;
   text-align: center;
   font-size: 13px;
   font-weight: 700;
   font-family: inherit;
   color: var(--text);
+  cursor: pointer;
+  min-width: 60px;
 }
-.state-input:hover { border-color: var(--border); background: var(--surface-2); }
-.state-input:focus {
+select.state-input:hover { border-color: var(--border); background-color: var(--surface-2); }
+select.state-input:focus {
   outline: none;
   border-color: var(--primary);
-  background: #fff;
+  background-color: #fff;
   box-shadow: 0 0 0 2px rgba(79, 92, 238, 0.15);
 }
-.state-input.st-perfect { background: #d3f0dd; color: #16723e; }
-.state-input.st-good    { background: #d4e7ff; color: #1455a8; }
-.state-input.st-mid     { background: #fde7b8; color: #8a5b07; }
-.state-input.st-low     { background: #fcd6cc; color: #9c3119; }
-.state-input.st-zero    { background: #e9eaee; color: #5a5f72; }
-.state-input.st-none    { background: transparent; color: var(--muted); }
+select.state-input.st-s    { background-color: #d3f0dd; color: #16723e; }
+select.state-input.st-a    { background-color: #d4e7ff; color: #1455a8; }
+select.state-input.st-b    { background-color: #fde7b8; color: #8a5b07; }
+select.state-input.st-none { background-color: transparent; color: var(--muted); }
 
 /* Grade select inline */
 .grade-select {
@@ -876,6 +884,76 @@ td .value-input:focus, td .qty-input:focus {
 .thumb-btn:hover { background: #fff; }
 .thumb-btn.danger { color: var(--danger); }
 .thumb-btn.danger:hover { background: #fff; color: var(--danger-hover); }
+
+/* Condition guide */
+.condition-guide {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  font-size: 13.5px;
+  box-shadow: var(--shadow-sm);
+}
+.condition-guide summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.condition-guide summary::-webkit-details-marker { display: none; }
+.condition-guide summary::after {
+  content: "▾";
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  transition: transform 200ms;
+}
+.condition-guide[open] summary::after { transform: rotate(180deg); }
+.condition-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: var(--surface-2);
+  color: var(--text-soft);
+  margin-left: 4px;
+}
+.condition-tag:nth-of-type(1) { background: #d3f0dd; color: #16723e; }
+.condition-tag:nth-of-type(2) { background: #d4e7ff; color: #1455a8; }
+.condition-tag:nth-of-type(3) { background: #fde7b8; color: #8a5b07; }
+.condition-guide-body {
+  padding-top: 14px;
+  color: var(--text-soft);
+  line-height: 1.6;
+}
+.condition-guide-body p { margin: 0 0 8px; }
+.condition-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.condition-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.condition-list .state-badge { flex-shrink: 0; min-width: 36px; }
+.condition-note {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 4px 0 0;
+}
 
 /* Set chip (확장팩 라벨) */
 .set-chip {
@@ -1616,20 +1694,17 @@ body.modal-open { overflow: hidden; }
 
 /* Buyer card discount */
 .market-card-deal-strip {
-  position: absolute;
-  top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
+  display: inline-block;
+  align-self: flex-start;
   background: var(--danger);
   color: #fff;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 700;
   padding: 3px 10px;
-  border-radius: 999px;
-  z-index: 2;
+  border-radius: 6px;
+  margin: 4px 0 2px;
   white-space: nowrap;
-  letter-spacing: 0.02em;
-  box-shadow: 0 2px 8px rgba(224, 71, 62, 0.4);
+  letter-spacing: 0.01em;
 }
 .market-card-prices {
   display: flex;

@@ -29,6 +29,7 @@ let inventoryUnsub = null;
 let setsUnsub = null;
 let initialLoaded = false;
 let migrationAttempted = false;
+let stateMigrationAttempted = false;
 
 let pendingSaves = 0;
 let savingTimer = null;
@@ -177,24 +178,42 @@ function normalizeGrade(raw) {
   return s;
 }
 
+function numericToLetter(n) {
+  if (!Number.isFinite(n)) return null;
+  if (n >= 9) return "S";
+  if (n >= 6) return "A";
+  if (n >= 1) return "B";
+  return null;
+}
 function normalizeState(raw) {
   if (raw == null || raw === "") return null;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return null;
-  return Math.max(0, Math.min(10, Math.round(n)));
+  if (typeof raw === "string") {
+    const s = raw.trim().toUpperCase();
+    if (s === "S" || s === "A" || s === "B") return s;
+    const n = parseFloat(s);
+    if (Number.isFinite(n)) return numericToLetter(n);
+    return null;
+  }
+  if (typeof raw === "number") return numericToLetter(raw);
+  return null;
+}
+
+const STATE_RANK = { S: 3, A: 2, B: 1 };
+function stateRank(s) {
+  return STATE_RANK[String(s || "").toUpperCase()] || 0;
 }
 
 function stateClass(s) {
   if (s == null) return "st-none";
-  if (s >= 9) return "st-perfect";
-  if (s >= 7) return "st-good";
-  if (s >= 4) return "st-mid";
-  if (s >= 1) return "st-low";
-  return "st-zero";
+  const u = String(s).toUpperCase();
+  if (u === "S") return "st-s";
+  if (u === "A") return "st-a";
+  if (u === "B") return "st-b";
+  return "st-none";
 }
 
 function stateLabel(s) {
-  return s == null ? "—" : `${s}/10`;
+  return s == null ? "—" : String(s);
 }
 
 // ---------- Discount helpers ----------
@@ -475,6 +494,25 @@ function refreshSyncStatus() {
   setSyncStatus("synced");
 }
 
+async function migrateNumericStates() {
+  if (stateMigrationAttempted) return;
+  if (!isOwner(currentUser)) return;
+  let changed = false;
+  for (const [k, v] of items) {
+    if (typeof v.state === "number") {
+      const letter = numericToLetter(v.state);
+      items.set(k, { ...v, state: letter });
+      changed = true;
+    }
+  }
+  if (changed) {
+    stateMigrationAttempted = true;
+    await saveInventory();
+  } else {
+    stateMigrationAttempted = true;
+  }
+}
+
 function attachInventoryListener() {
   if (inventoryUnsub) inventoryUnsub();
 
@@ -484,6 +522,7 @@ function attachInventoryListener() {
       const data = snap.exists() ? snap.data() : null;
       const obj = (data && data.items) || {};
       items = new Map(Object.entries(obj));
+      migrateNumericStates();
       renderAll();
       if (!snap.metadata.hasPendingWrites && pendingSaves === 0) {
         refreshSyncStatus();
@@ -694,16 +733,16 @@ function renderStats() {
   const orderedStates = Array.from(byState.keys()).sort((a, b) => {
     if (a === "__none__") return 1;
     if (b === "__none__") return -1;
-    return Number(b) - Number(a); // descending
+    return stateRank(b) - stateRank(a); // S → A → B
   });
   els.statGrades.innerHTML = "";
   for (const s of orderedStates) {
     const stat = byState.get(s);
-    const score = s === "__none__" ? null : Number(s);
+    const letter = s === "__none__" ? null : s;
     const pill = document.createElement("div");
     pill.className = "grade-pill";
     pill.innerHTML = `
-      <span class="state-badge ${stateClass(score)}">${score == null ? "—" : `${score}<small>/10</small>`}</span>
+      <span class="state-badge ${stateClass(letter)}">${letter == null ? "—" : escapeHTML(letter)}</span>
       <span class="grade-pill-text">${stat.types}종 · ${stat.qty}장</span>
     `;
     els.statGrades.appendChild(pill);
@@ -729,7 +768,7 @@ function renderGradeFilter() {
   for (const [, v] of items) presentStates.add(v.state == null ? "__none__" : String(v.state));
   const states = Array.from(presentStates)
     .filter((s) => s !== "__none__")
-    .sort((a, b) => Number(b) - Number(a)); // descending: 10 → 0
+    .sort((a, b) => stateRank(b) - stateRank(a)); // S → A → B
 
   container.innerHTML = "";
   const allBtn = document.createElement("button");
@@ -741,7 +780,7 @@ function renderGradeFilter() {
     const btn = document.createElement("button");
     btn.className = "chip" + (activeState === s ? " active" : "");
     btn.dataset.state = s;
-    btn.innerHTML = `<span class="state-badge ${stateClass(Number(s))}">${s}<small>/10</small></span>`;
+    btn.innerHTML = `<span class="state-badge ${stateClass(s)}">${escapeHTML(s)}</span>`;
     container.appendChild(btn);
   }
   if (presentStates.has("__none__")) {
@@ -772,12 +811,12 @@ function compareItems(a, b) {
       return a.no.localeCompare(b.no, "ko", { numeric: true });
     }
     case "state": {
-      const sa = a.state;
-      const sb = b.state;
-      if (sa == null && sb == null) return a.no.localeCompare(b.no, "ko", { numeric: true });
-      if (sa == null) return 1;
-      if (sb == null) return -1;
-      if (sa !== sb) return (sa - sb) * dir;
+      const ra = stateRank(a.state);
+      const rb = stateRank(b.state);
+      if (ra === 0 && rb === 0) return a.no.localeCompare(b.no, "ko", { numeric: true });
+      if (ra === 0) return 1;
+      if (rb === 0) return -1;
+      if (ra !== rb) return (ra - rb) * dir;
       return a.no.localeCompare(b.no, "ko", { numeric: true });
     }
     case "value": {
@@ -812,8 +851,7 @@ function renderInventory() {
   if (activeState === "__none__") {
     filtered = filtered.filter((r) => r.state == null);
   } else if (activeState !== "") {
-    const target = Number(activeState);
-    filtered = filtered.filter((r) => r.state === target);
+    filtered = filtered.filter((r) => r.state === activeState);
   }
   if (q) {
     filtered = filtered.filter(
@@ -833,7 +871,14 @@ function renderInventory() {
         <td class="thumb-cell">${thumbCell}</td>
         <td class="mono no-cell">${setChipHTML(r.no)}<span class="no-text">${escapeHTML(r.no)}</span></td>
         <td><span class="cell-edit" data-field="name" tabindex="0">${escapeHTML(r.name || "")}<span class="cell-empty">${r.name ? "" : "이름 없음"}</span></span></td>
-        <td><input type="number" class="state-input ${stateClass(r.state)}" data-field="state" min="0" max="10" step="1" value="${r.state == null ? "" : r.state}" placeholder="—" aria-label="상태 (0-10점)" /></td>
+        <td>
+          <select class="state-input ${stateClass(r.state)}" data-field="state" aria-label="상태">
+            <option value="" ${r.state == null ? "selected" : ""}>—</option>
+            <option value="S" ${r.state === "S" ? "selected" : ""}>S</option>
+            <option value="A" ${r.state === "A" ? "selected" : ""}>A</option>
+            <option value="B" ${r.state === "B" ? "selected" : ""}>B</option>
+          </select>
+        </td>
         <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가격" /></td>
         <td class="discount-cell">${discountCellHTML(r)}</td>
         <td class="num">
@@ -892,12 +937,11 @@ function renderBuyerCards(filtered) {
     const orig = parseInt0(r.value);
 
     const dealStrip = hasDiscount
-      ? `<span class="market-card-deal-strip">${r.discount.percent}% OFF${r.discount.endsAt ? ` · ${timeUntilLabel(r.discount.endsAt)}` : ""}</span>`
+      ? `<div class="market-card-deal-strip">${r.discount.percent}% OFF${r.discount.endsAt ? ` · ${timeUntilLabel(r.discount.endsAt)}` : ""}</div>`
       : "";
 
     const overlays = `
-      ${dealStrip}
-      ${r.state != null ? `<span class="market-card-state state-badge ${stateClass(r.state)}">${r.state}<small>/10</small></span>` : ""}
+      ${r.state != null ? `<span class="market-card-state state-badge ${stateClass(r.state)}">${escapeHTML(r.state)}</span>` : ""}
       ${r.qty > 0
         ? `<span class="market-card-stock-badge">재고 ${r.qty}</span>`
         : `<span class="market-card-stock-badge sold-out">품절</span>`}
@@ -937,6 +981,7 @@ function renderBuyerCards(filtered) {
       <div class="market-card-body">
         <span class="market-card-no">${setChipHTML(r.no)}<span>${escapeHTML(r.no)}</span></span>
         <h3 class="market-card-title">${escapeHTML(r.name || "이름 미등록")}</h3>
+        ${dealStrip}
         <div class="market-card-bottom">
           ${priceBlock}
           ${addBtn}
@@ -1595,7 +1640,7 @@ function renderRequestResult(code, data) {
     const insufficient = stock < (it.qty || 0);
     if (insufficient) stockWarning.push(`${it.no} (요청 ${it.qty} / 재고 ${stock})`);
     const stateBadge = it.state != null
-      ? `<span class="state-badge ${stateClass(it.state)}">${it.state}<small>/10</small></span>`
+      ? `<span class="state-badge ${stateClass(it.state)}">${escapeHTML(String(it.state))}</span>`
       : "";
     const orig = it.value || 0;
     const linePrice = it.effectivePrice != null ? it.effectivePrice : orig;
@@ -1738,7 +1783,7 @@ async function upsertCard({ no, name, grade, state, value, qty }, mode = "merge"
     no: trimmedNo,
     name: name != null && name !== "" ? String(name).trim() : (existing ? existing.name : ""),
     grade: grade != null && grade !== "" ? normalizeGrade(grade) : (existing ? existing.grade : ""),
-    state: incomingState != null ? incomingState : (existing ? (existing.state ?? null) : 10),
+    state: incomingState != null ? incomingState : (existing ? (existing.state ?? null) : "S"),
     value: value != null && value !== "" ? parseInt0(value) : (existing ? existing.value : 0),
     qty: 0,
   };
@@ -1843,7 +1888,7 @@ function showSuggestions(query) {
     li.dataset.no = m.no;
     li.innerHTML = `
       <span><span class="no">${escapeHTML(m.no)}</span> &nbsp; ${escapeHTML(m.name || "")}</span>
-      <span class="meta">${m.state != null ? `<span class="state-badge ${stateClass(m.state)}">${m.state}<small>/10</small></span>` : ""} ${formatWon(m.value || 0)}</span>
+      <span class="meta">${m.state != null ? `<span class="state-badge ${stateClass(m.state)}">${escapeHTML(String(m.state))}</span>` : ""} ${formatWon(m.value || 0)}</span>
     `;
     list.appendChild(li);
   }
@@ -1935,7 +1980,7 @@ els.addForm.addEventListener("submit", async (e) => {
     els.cardNo.value = "";
     els.cardName.value = "";
     els.cardGrade.value = "";
-    els.cardState.value = "10";
+    els.cardState.value = "S";
     els.cardValue.value = "";
     els.cardQty.value = "1";
     els.suggestions.classList.add("hidden");

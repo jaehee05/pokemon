@@ -96,7 +96,12 @@
           <option value="SAR">SAR</option>
           <option value="UR">UR</option>
         </select>
-        <input type="number" id="card-state" min="0" max="10" step="1" value="10" placeholder="상태" aria-label="상태 (0-10점)" />
+        <select id="card-state" aria-label="컨디션 등급">
+          <option value="">상태</option>
+          <option value="S" selected>S</option>
+          <option value="A">A</option>
+          <option value="B">B</option>
+        </select>
         <input type="number" id="card-value" min="0" step="100" placeholder="가치(원)" />
         <input type="number" id="card-qty" min="1" step="1" value="1" aria-label="수량" />
         <button class="btn btn-primary" type="submit">추가</button>
@@ -107,6 +112,21 @@
         <span class="format-toggle-text">사진 업로드 시 자동 정렬 <small>흰 배경 1:1 캔버스에 카드를 가운데 정렬해 저장</small></span>
       </label>
     </section>
+
+    <details class="condition-guide">
+      <summary>📖 컨디션 등급 안내 <span class="condition-tag">S</span><span class="condition-tag">A</span><span class="condition-tag">B</span></summary>
+      <div class="condition-guide-body">
+        <p>카드 등급은 <strong>외관 컨디션</strong>만을 기준으로 분류합니다.</p>
+        <ul class="condition-list">
+          <li><span class="state-badge st-s">S</span> 개봉 직후 바로 슬리브/탑로더 보관된 <strong>최상급</strong> 컨디션</li>
+          <li><span class="state-badge st-a">A</span> 육안으로 미세 흠집이 보일 수 있는 <strong>양호한</strong> 컨디션</li>
+          <li><span class="state-badge st-b">B</span> 스크래치, 찍힘 등 <strong>사용감이 뚜렷한</strong> 컨디션</li>
+        </ul>
+        <p class="condition-note">공장 인쇄 과정에서 발생할 수 있는 센터링(여백 차이), 점박이, 인쇄 번짐, 컷팅 흔적 등은 제조 특성상 등급 판정에 포함되지 않습니다.</p>
+        <p class="condition-note">📸 모든 카드는 실제 사진을 기반으로 판매되며, 구매 전 꼭 사진을 확인해 주세요.</p>
+        <p class="condition-note">⚠️ 제조상의 특성이나 미세한 인쇄 차이로 인한 교환·환불은 어려운 점 양해 부탁드립니다.</p>
+      </div>
+    </details>
 
     <section class="panel" id="request-panel" data-owner-only>
       <div class="panel-header">
