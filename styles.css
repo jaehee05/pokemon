@@ -127,6 +127,9 @@ code {
   box-shadow: 0 0 0 3px rgba(255, 214, 77, 0.25);
 }
 
+/* iOS Safari: input/select가 flex 안에서 줄어들지 않는 문제 방지 */
+input, select, textarea { min-width: 0; }
+
 /* Hero right-side actions */
 .hero-actions {
   display: flex;
@@ -984,7 +987,9 @@ td.no-cell .no-text { vertical-align: middle; }
   gap: 8px;
   align-items: stretch;
 }
+.sets-form > * { min-width: 0; }
 .sets-form input {
+  width: 100%;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
@@ -1865,6 +1870,15 @@ body.modal-open { overflow: hidden; }
   .panel { padding: 14px; border-radius: 10px; }
   .panel-header h2 { font-size: 16px; }
   .panel-sub { font-size: 12.5px; }
+}
+
+/* 매우 좁은 화면: 관리자 폼 항목들 모두 한 줄씩 (iOS 클리핑 방지) */
+@media (max-width: 480px) {
+  .add-form > *,
+  .sets-form > * {
+    flex: 1 1 100%;
+    max-width: none;
+  }
 }
 
 /* 카트 항목: 좁은 화면에서 2줄 레이아웃 */
