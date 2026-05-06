@@ -2470,7 +2470,19 @@ getRedirectResult(auth).catch((err) => {
   }
 });
 
+let lastLoggedInUid = null;
 onAuthStateChanged(auth, (user) => {
+  console.log("[auth] state:", user ? `${user.email} (uid=${user.uid})` : "logged out", "isOwner:", isOwner(user));
+  if (user && user.uid !== lastLoggedInUid) {
+    lastLoggedInUid = user.uid;
+    if (isOwner(user)) {
+      showToast(`관리자 로그인됨: ${user.email}`, "success");
+    } else {
+      showToast(`로그인됨: ${user.email} — 관리자 이메일이 아닙니다.`, "error");
+    }
+  } else if (!user && lastLoggedInUid) {
+    lastLoggedInUid = null;
+  }
   currentUser = user || null;
   applyOwnerMode();
   refreshSyncStatus();
