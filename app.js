@@ -123,6 +123,7 @@ const els = {
   discountModalCard: $("discount-modal-card"),
   discountForm: $("discount-form"),
   discountPercent: $("discount-percent"),
+  discountFinal: $("discount-final"),
   discountStart: $("discount-start"),
   discountEnd: $("discount-end"),
   discountRemove: $("discount-remove"),
@@ -133,6 +134,8 @@ const els = {
 
 let currentUploadKey = null;
 let currentDiscountKey = null;
+let currentDiscountOriginal = 0;
+let discountSyncing = false;
 let imageAutoFormat = (() => {
   try { return localStorage.getItem("pokemon_image_auto_format") !== "0"; }
   catch (e) { return true; }
@@ -974,9 +977,16 @@ function openDiscountModal(key) {
   const entry = items.get(k);
   if (!entry) return;
   currentDiscountKey = k;
-  els.discountModalCard.textContent = `${entry.no}${entry.name ? " · " + entry.name : ""}`;
+  currentDiscountOriginal = parseInt0(entry.value);
+  els.discountModalCard.textContent = `${entry.no}${entry.name ? " · " + entry.name : ""} · 원가 ${formatWon(currentDiscountOriginal)}`;
   const d = entry.discount || {};
-  els.discountPercent.value = d.percent || "";
+  const percent = d.percent || "";
+  els.discountPercent.value = percent;
+  if (percent && currentDiscountOriginal > 0) {
+    els.discountFinal.value = Math.round((currentDiscountOriginal * (100 - percent)) / 100);
+  } else {
+    els.discountFinal.value = "";
+  }
   els.discountStart.value = isoToLocalInput(d.startsAt);
   els.discountEnd.value = isoToLocalInput(d.endsAt);
   els.discountModal.hidden = false;
@@ -2261,6 +2271,32 @@ if (els.discountRemove) {
 }
 if (els.discountCancel) els.discountCancel.addEventListener("click", closeDiscountModal);
 if (els.discountModalBackdrop) els.discountModalBackdrop.addEventListener("click", closeDiscountModal);
+
+// 할인율 ↔ 할인 후 금액 양방향 동기화
+if (els.discountPercent) {
+  els.discountPercent.addEventListener("input", () => {
+    if (discountSyncing) return;
+    if (currentDiscountOriginal <= 0) return;
+    const p = parseFloat(els.discountPercent.value);
+    if (!Number.isFinite(p)) { els.discountFinal.value = ""; return; }
+    discountSyncing = true;
+    els.discountFinal.value = Math.max(0, Math.round((currentDiscountOriginal * (100 - p)) / 100));
+    discountSyncing = false;
+  });
+}
+if (els.discountFinal) {
+  els.discountFinal.addEventListener("input", () => {
+    if (discountSyncing) return;
+    if (currentDiscountOriginal <= 0) return;
+    const f = parseFloat(els.discountFinal.value);
+    if (!Number.isFinite(f)) { els.discountPercent.value = ""; return; }
+    const clamped = Math.max(0, Math.min(currentDiscountOriginal, f));
+    const p = Math.round(((currentDiscountOriginal - clamped) / currentDiscountOriginal) * 100);
+    discountSyncing = true;
+    els.discountPercent.value = Math.max(0, Math.min(100, p));
+    discountSyncing = false;
+  });
+}
 
 // Image auto-format toggle
 if (els.imageFormatOn) {

@@ -1569,6 +1569,20 @@ body.modal-open { overflow: hidden; }
   font-size: 13.5px;
 }
 .discount-field { margin-bottom: 12px; }
+.discount-field-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.discount-field-row .discount-field {
+  flex: 1;
+  margin-bottom: 0;
+  min-width: 0;
+}
+@media (max-width: 480px) {
+  .discount-field-row { flex-direction: column; gap: 12px; }
+  .discount-field-row .discount-field { margin-bottom: 0; }
+}
 .discount-field label {
   display: block;
   font-size: 13px;

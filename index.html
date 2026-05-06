@@ -227,9 +227,15 @@
       <h2>할인 설정</h2>
       <p class="modal-sub" id="discount-modal-card"></p>
       <form id="discount-form">
-        <div class="discount-field">
-          <label for="discount-percent">할인율 (%)</label>
-          <input type="number" id="discount-percent" min="1" max="100" step="1" required />
+        <div class="discount-field-row">
+          <div class="discount-field">
+            <label for="discount-percent">할인율 (%)</label>
+            <input type="number" id="discount-percent" min="1" max="100" step="1" required />
+          </div>
+          <div class="discount-field">
+            <label for="discount-final">할인 후 금액 (원) <small>자동 연동</small></label>
+            <input type="number" id="discount-final" min="0" step="100" />
+          </div>
         </div>
         <div class="discount-field">
           <label for="discount-start">시작 일시 <small>(비우면 즉시 시작)</small></label>
