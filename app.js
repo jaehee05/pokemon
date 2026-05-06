@@ -70,6 +70,7 @@ const els = {
   inventoryEmpty: $("inventory-empty"),
   inventorySearch: $("inventory-search"),
   inventoryClear: $("inventory-clear"),
+  imagesClearBtn: $("images-clear-btn"),
   inventoryCount: $("inventory-count"),
   inventoryTable: $("inventory-table"),
   cardGrid: $("card-grid"),
@@ -1226,6 +1227,48 @@ async function deleteCardImage(key) {
   }
 }
 
+async function bulkRemoveImages() {
+  if (!isOwner(currentUser)) return;
+  const withImages = Array.from(items.entries()).filter(([, v]) => v && v.imageUrl);
+  if (withImages.length === 0) {
+    showToast("제거할 이미지가 없습니다.", "error");
+    return;
+  }
+  if (!confirm(`총 ${withImages.length}장의 카드 이미지를 모두 제거할까요?\n\n인벤토리 카드 자체는 그대로 유지되고, 사진만 제거됩니다.\n되돌릴 수 없습니다.`)) return;
+
+  showToast(`이미지 ${withImages.length}장 제거 중…`);
+  let success = 0;
+  let failed = 0;
+  // Storage 삭제는 best-effort (병렬 배치)
+  const batchSize = 8;
+  for (let i = 0; i < withImages.length; i += batchSize) {
+    const batch = withImages.slice(i, i + batchSize);
+    await Promise.all(batch.map(async ([key, entry]) => {
+      try {
+        if (entry.imagePath) {
+          try { await deleteObject(storageRef(storage, entry.imagePath)); }
+          catch (e) { console.warn(`storage delete (non-fatal) ${key}`, e); }
+        }
+        const next = { ...entry };
+        delete next.imageUrl;
+        delete next.imagePath;
+        delete next.imageUpdatedAt;
+        items.set(key, next);
+        success++;
+      } catch (e) {
+        console.error(`bulk image remove failed for ${key}`, e);
+        failed++;
+      }
+    }));
+  }
+  await saveInventory();
+  renderAll();
+  showToast(
+    `이미지 ${success}장 제거 완료${failed > 0 ? ` (실패 ${failed})` : ""}`,
+    failed > 0 ? "error" : "success",
+  );
+}
+
 function openLightbox(url) {
   if (!url) return;
   els.lightboxImg.src = url;
@@ -2249,6 +2292,9 @@ els.gradeFilter.addEventListener("click", (e) => {
 
 els.inventorySearch.addEventListener("input", renderInventory);
 els.exportBtn.addEventListener("click", exportCSV);
+if (els.imagesClearBtn) {
+  els.imagesClearBtn.addEventListener("click", bulkRemoveImages);
+}
 els.inventoryClear.addEventListener("click", async () => {
   if (!isOwner(currentUser)) return;
   if (items.size === 0) return;
