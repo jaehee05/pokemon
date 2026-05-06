@@ -172,6 +172,7 @@
               <th class="sortable" data-sort="name">카드명 <span class="sort-ind"></span></th>
               <th class="sortable" data-sort="state">상태 <span class="sort-ind"></span></th>
               <th class="sortable num" data-sort="value">가격 <span class="sort-ind"></span></th>
+              <th>할인</th>
               <th class="sortable num" data-sort="qty">재고 <span class="sort-ind"></span></th>
               <th class="sortable num" data-sort="total">합계 <span class="sort-ind"></span></th>
               <th data-owner-only></th>
@@ -215,6 +216,33 @@
     </footer>
   </aside>
   <div class="cart-backdrop" id="cart-backdrop" data-buyer-only hidden></div>
+
+  <div class="discount-modal" id="discount-modal" hidden role="dialog" aria-modal="true" aria-label="할인 설정">
+    <div class="modal-backdrop" id="discount-modal-backdrop"></div>
+    <div class="modal-content">
+      <h2>할인 설정</h2>
+      <p class="modal-sub" id="discount-modal-card"></p>
+      <form id="discount-form">
+        <div class="discount-field">
+          <label for="discount-percent">할인율 (%)</label>
+          <input type="number" id="discount-percent" min="1" max="100" step="1" required />
+        </div>
+        <div class="discount-field">
+          <label for="discount-start">시작 일시 <small>(비우면 즉시 시작)</small></label>
+          <input type="datetime-local" id="discount-start" />
+        </div>
+        <div class="discount-field">
+          <label for="discount-end">종료 일시 <small>(비우면 무기한)</small></label>
+          <input type="datetime-local" id="discount-end" />
+        </div>
+        <div class="discount-modal-actions">
+          <button type="button" class="btn btn-danger" id="discount-remove">할인 제거</button>
+          <button type="button" class="btn" id="discount-cancel">취소</button>
+          <button type="submit" class="btn btn-primary">저장</button>
+        </div>
+      </form>
+    </div>
+  </div>
 
   <div class="code-modal" id="code-modal" hidden role="dialog" aria-modal="true" aria-label="구매 요청 코드">
     <div class="code-modal-backdrop" id="code-modal-backdrop"></div>

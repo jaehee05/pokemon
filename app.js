@@ -117,9 +117,20 @@ const els = {
   setPrefix: $("set-prefix"),
   setName: $("set-name"),
   setsList: $("sets-list"),
+
+  discountModal: $("discount-modal"),
+  discountModalBackdrop: $("discount-modal-backdrop"),
+  discountModalCard: $("discount-modal-card"),
+  discountForm: $("discount-form"),
+  discountPercent: $("discount-percent"),
+  discountStart: $("discount-start"),
+  discountEnd: $("discount-end"),
+  discountRemove: $("discount-remove"),
+  discountCancel: $("discount-cancel"),
 };
 
 let currentUploadKey = null;
+let currentDiscountKey = null;
 let cart = {};
 try {
   cart = JSON.parse(localStorage.getItem("pokemon_cart_v1") || "{}") || {};
@@ -175,6 +186,67 @@ function stateClass(s) {
 
 function stateLabel(s) {
   return s == null ? "—" : `${s}/10`;
+}
+
+// ---------- Discount helpers ----------
+function parseISO(s) {
+  if (!s) return null;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function isDiscountActive(d, now = new Date()) {
+  if (!d || !d.percent || d.percent <= 0) return false;
+  const start = parseISO(d.startsAt);
+  const end = parseISO(d.endsAt);
+  if (start && start > now) return false;
+  if (end && end < now) return false;
+  return true;
+}
+function isDiscountScheduled(d, now = new Date()) {
+  if (!d || !d.percent) return false;
+  const start = parseISO(d.startsAt);
+  return !!(start && start > now);
+}
+function isDiscountExpired(d, now = new Date()) {
+  if (!d || !d.percent) return false;
+  const end = parseISO(d.endsAt);
+  return !!(end && end < now);
+}
+function getEffectivePrice(item) {
+  const v = parseInt0(item && item.value);
+  if (!item || !isDiscountActive(item.discount)) return v;
+  const p = item.discount.percent || 0;
+  return Math.max(0, Math.round((v * (100 - p)) / 100));
+}
+function timeUntilLabel(iso) {
+  const target = parseISO(iso);
+  if (!target) return "";
+  const ms = target.getTime() - Date.now();
+  if (ms <= 0) return "만료";
+  const days = Math.floor(ms / 86400000);
+  if (days >= 1) {
+    const hours = Math.floor((ms % 86400000) / 3600000);
+    return hours > 0 ? `${days}일 ${hours}시간 남음` : `${days}일 남음`;
+  }
+  const hours = Math.floor(ms / 3600000);
+  if (hours >= 1) {
+    const minutes = Math.floor((ms % 3600000) / 60000);
+    return minutes > 0 ? `${hours}시간 ${minutes}분 남음` : `${hours}시간 남음`;
+  }
+  const minutes = Math.max(1, Math.floor(ms / 60000));
+  return `${minutes}분 남음`;
+}
+function isoToLocalInput(iso) {
+  const d = parseISO(iso);
+  if (!d) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function localInputToISO(local) {
+  if (!local) return null;
+  const d = new Date(local);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
 }
 
 function isOwner(user) {
@@ -673,6 +745,11 @@ function renderGradeFilter() {
 }
 
 function compareItems(a, b) {
+  // 품절 상품은 정렬 방향과 무관하게 항상 뒤로
+  const aSold = (parseInt0(a.qty) || 0) <= 0;
+  const bSold = (parseInt0(b.qty) || 0) <= 0;
+  if (aSold !== bSold) return aSold ? 1 : -1;
+
   const dir = sortDir;
   switch (sortKey) {
     case "no":
@@ -694,13 +771,18 @@ function compareItems(a, b) {
       if (sa !== sb) return (sa - sb) * dir;
       return a.no.localeCompare(b.no, "ko", { numeric: true });
     }
-    case "value":
-      return ((a.value || 0) - (b.value || 0)) * dir || a.no.localeCompare(b.no, "ko", { numeric: true });
+    case "value": {
+      const av = getEffectivePrice(a);
+      const bv = getEffectivePrice(b);
+      return (av - bv) * dir || a.no.localeCompare(b.no, "ko", { numeric: true });
+    }
     case "qty":
       return ((a.qty || 0) - (b.qty || 0)) * dir || a.no.localeCompare(b.no, "ko", { numeric: true });
-    case "total":
-      return (((a.qty || 0) * (a.value || 0)) - ((b.qty || 0) * (b.value || 0))) * dir
-        || a.no.localeCompare(b.no, "ko", { numeric: true });
+    case "total": {
+      const at = (a.qty || 0) * getEffectivePrice(a);
+      const bt = (b.qty || 0) * getEffectivePrice(b);
+      return (at - bt) * dir || a.no.localeCompare(b.no, "ko", { numeric: true });
+    }
   }
   return 0;
 }
@@ -744,6 +826,7 @@ function renderInventory() {
         <td><span class="cell-edit" data-field="name" tabindex="0">${escapeHTML(r.name || "")}<span class="cell-empty">${r.name ? "" : "이름 없음"}</span></span></td>
         <td><input type="number" class="state-input ${stateClass(r.state)}" data-field="state" min="0" max="10" step="1" value="${r.state == null ? "" : r.state}" placeholder="—" aria-label="상태 (0-10점)" /></td>
         <td class="num"><input type="number" class="value-input" data-field="value" min="0" step="100" value="${r.value || 0}" aria-label="가격" /></td>
+        <td class="discount-cell">${discountCellHTML(r)}</td>
         <td class="num">
           <div class="qty-cell">
             <button class="icon-btn" data-act="dec" title="−1">−</button>
@@ -751,7 +834,7 @@ function renderInventory() {
             <button class="icon-btn" data-act="inc" title="+1">+</button>
           </div>
         </td>
-        <td class="num total-cell">${formatWon(total)}</td>
+        <td class="num total-cell">${formatWon((r.qty || 0) * getEffectivePrice(r))}</td>
         <td><button class="icon-btn danger" data-act="remove" title="삭제">×</button></td>
       `;
       tbody.appendChild(tr);
@@ -795,7 +878,16 @@ function renderBuyerCards(filtered) {
     if (r.imageUrl) card.classList.add("has-image");
     if (!r.qty) card.classList.add("sold-out");
 
+    const hasDiscount = isDiscountActive(r.discount);
+    const eff = getEffectivePrice(r);
+    const orig = parseInt0(r.value);
+
+    const dealStrip = hasDiscount
+      ? `<span class="market-card-deal-strip">${r.discount.percent}% OFF${r.discount.endsAt ? ` · ${timeUntilLabel(r.discount.endsAt)}` : ""}</span>`
+      : "";
+
     const overlays = `
+      ${dealStrip}
       ${r.state != null ? `<span class="market-card-state state-badge ${stateClass(r.state)}">${r.state}<small>/10</small></span>` : ""}
       ${r.qty > 0
         ? `<span class="market-card-stock-badge">재고 ${r.qty}</span>`
@@ -824,13 +916,20 @@ function renderBuyerCards(filtered) {
       addBtn = `<button class="market-card-add" type="button" data-cart-act="add" data-key="${escapeAttr(r.key)}">담기</button>`;
     }
 
+    const priceBlock = hasDiscount
+      ? `<div class="market-card-prices">
+           <div class="market-card-price-row"><span class="market-card-percent">${r.discount.percent}%</span><span class="market-card-orig">${formatWon(orig)}</span></div>
+           <span class="market-card-final">${formatWon(eff)}</span>
+         </div>`
+      : `<span class="market-card-price">${formatWon(orig)}</span>`;
+
     card.innerHTML = `
       ${imageBlock}
       <div class="market-card-body">
         <span class="market-card-no">${setChipHTML(r.no)}<span>${escapeHTML(r.no)}</span></span>
         <h3 class="market-card-title">${escapeHTML(r.name || "이름 미등록")}</h3>
         <div class="market-card-bottom">
-          <span class="market-card-price">${formatWon(r.value || 0)}</span>
+          ${priceBlock}
           ${addBtn}
         </div>
       </div>
@@ -844,6 +943,56 @@ function syncSortSelect() {
   const v = `${sortKey}|${sortDir}`;
   const opt = Array.from(els.sortSelect.options).find((o) => o.value === v);
   els.sortSelect.value = opt ? v : "no|1";
+}
+
+function discountCellHTML(r) {
+  const d = r.discount;
+  if (!d || !d.percent) {
+    return `<button class="discount-btn empty" type="button" data-discount-btn>＋ 할인</button>`;
+  }
+  const expired = isDiscountExpired(d);
+  const scheduled = isDiscountScheduled(d);
+  const active = isDiscountActive(d);
+  let cls = "active";
+  let sub = "활성";
+  if (expired) { cls = "expired"; sub = "만료"; }
+  else if (scheduled) { cls = "scheduled"; sub = `D-${Math.max(1, Math.ceil((parseISO(d.startsAt) - Date.now()) / 86400000))}`; }
+  else if (active && d.endsAt) sub = timeUntilLabel(d.endsAt);
+  else if (active) sub = "무기한";
+  return `<button class="discount-btn ${cls}" type="button" data-discount-btn><span class="percent">${d.percent}%</span><span class="sub">${escapeHTML(sub)}</span></button>`;
+}
+
+function openDiscountModal(key) {
+  if (!isOwner(currentUser)) return;
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  currentDiscountKey = k;
+  els.discountModalCard.textContent = `${entry.no}${entry.name ? " · " + entry.name : ""}`;
+  const d = entry.discount || {};
+  els.discountPercent.value = d.percent || "";
+  els.discountStart.value = isoToLocalInput(d.startsAt);
+  els.discountEnd.value = isoToLocalInput(d.endsAt);
+  els.discountModal.hidden = false;
+  document.body.classList.add("modal-open");
+  setTimeout(() => els.discountPercent.focus(), 0);
+}
+function closeDiscountModal() {
+  els.discountModal.hidden = true;
+  document.body.classList.remove("modal-open");
+  currentDiscountKey = null;
+}
+async function persistDiscount(key, discount) {
+  if (!isOwner(currentUser)) return;
+  const k = normalizeKey(key);
+  const entry = items.get(k);
+  if (!entry) return;
+  const next = { ...entry };
+  if (!discount || !discount.percent) delete next.discount;
+  else next.discount = discount;
+  items.set(k, next);
+  renderAll();
+  await saveInventory();
 }
 
 function thumbCellHTML(r, owner) {
@@ -1191,7 +1340,10 @@ function renderCart() {
         continue;
       }
       const stock = Math.max(0, parseInt0(item.qty));
-      const lineTotal = qty * (item.value || 0);
+      const eff = getEffectivePrice(item);
+      const orig = parseInt0(item.value);
+      const hasDiscount = eff < orig;
+      const lineTotal = qty * eff;
       totalQty += qty;
       totalValue += lineTotal;
       const row = document.createElement("div");
@@ -1200,11 +1352,14 @@ function renderCart() {
       const thumb = item.imageUrl
         ? `<img class="cart-item-thumb" src="${escapeAttr(item.imageUrl)}${item.imageUpdatedAt ? `?t=${item.imageUpdatedAt}` : ""}" alt="" loading="lazy" />`
         : `<div class="cart-item-thumb empty">—</div>`;
+      const priceLine = hasDiscount
+        ? `<span class="cart-item-percent">${item.discount.percent}%</span> <s>${formatWon(orig)}</s> ${formatWon(eff)}`
+        : `${formatWon(eff)}`;
       row.innerHTML = `
         ${thumb}
         <div class="cart-item-info">
           <div class="cart-item-name">${escapeHTML(item.name || "이름 미등록")}</div>
-          <div class="cart-item-no">${escapeHTML(item.no)} · ${formatWon(item.value || 0)}</div>
+          <div class="cart-item-no">${escapeHTML(item.no)} · ${priceLine}</div>
         </div>
         <div class="cart-item-qty">
           <button class="icon-btn" data-cart-act="dec" data-key="${escapeAttr(key)}" type="button">−</button>
@@ -1254,18 +1409,28 @@ async function submitPurchaseRequest() {
   for (const [key, qty] of entries) {
     const item = items.get(key);
     if (!item || qty <= 0) continue;
+    const eff = getEffectivePrice(item);
+    const discountSnap = isDiscountActive(item.discount)
+      ? {
+          percent: item.discount.percent,
+          startsAt: item.discount.startsAt || null,
+          endsAt: item.discount.endsAt || null,
+        }
+      : null;
     cartItems.push({
       key,
       no: item.no,
       name: item.name || "",
       qty,
       value: item.value || 0,
+      effectivePrice: eff,
+      discount: discountSnap,
       state: item.state == null ? null : item.state,
       grade: item.grade || "",
       imageUrl: item.imageUrl || "",
     });
     totalQty += qty;
-    totalValue += qty * (item.value || 0);
+    totalValue += qty * eff;
   }
   if (cartItems.length === 0) {
     showToast("유효한 카드가 없습니다.", "error");
@@ -1362,14 +1527,23 @@ function renderRequestResult(code, data) {
     const stateBadge = it.state != null
       ? `<span class="state-badge ${stateClass(it.state)}">${it.state}<small>/10</small></span>`
       : "";
+    const orig = it.value || 0;
+    const linePrice = it.effectivePrice != null ? it.effectivePrice : orig;
+    const lineTotal = linePrice * (it.qty || 0);
+    const discountTag = it.discount && it.discount.percent
+      ? ` <span class="discount-tag">${it.discount.percent}% 할인</span>`
+      : "";
+    const priceCell = linePrice !== orig
+      ? `<s>${formatWon(orig)}</s> ${formatWon(linePrice)}`
+      : formatWon(orig);
     return `
       <tr>
         <td class="mono">${escapeHTML(it.no)}</td>
-        <td>${escapeHTML(it.name || "")}${cur ? "" : ' <span class="missing-tag">삭제됨</span>'}</td>
+        <td>${escapeHTML(it.name || "")}${cur ? "" : ' <span class="missing-tag">삭제됨</span>'}${discountTag}</td>
         <td>${stateBadge}</td>
-        <td class="num">${formatWon(it.value || 0)}</td>
+        <td class="num">${priceCell}</td>
         <td class="num">${(it.qty || 0).toLocaleString("ko-KR")}${insufficient ? ` <span class="missing-tag">재고 ${stock}</span>` : ""}</td>
-        <td class="num">${formatWon((it.value || 0) * (it.qty || 0))}</td>
+        <td class="num">${formatWon(lineTotal)}</td>
       </tr>
     `;
   }).join("");
@@ -1784,6 +1958,11 @@ els.inventoryBody.addEventListener("click", async (e) => {
   }
 
   if (!isOwner(currentUser)) return;
+  const dBtn = e.target.closest("[data-discount-btn]");
+  if (dBtn) {
+    openDiscountModal(key);
+    return;
+  }
   const actBtn = e.target.closest("[data-act]");
   if (actBtn) {
     const act = actBtn.dataset.act;
@@ -1980,9 +2159,48 @@ els.lightboxClose.addEventListener("click", closeLightbox);
 window.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (!els.lightbox.hidden) { closeLightbox(); return; }
+  if (els.discountModal && !els.discountModal.hidden) { closeDiscountModal(); return; }
   if (els.codeModal && !els.codeModal.hidden) { closeCodeModal(); return; }
   if (els.cartDrawer && !els.cartDrawer.hidden) { closeCartDrawer(); return; }
 });
+
+// Discount modal
+if (els.discountForm) {
+  els.discountForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!currentDiscountKey) return;
+    const percent = parseInt(els.discountPercent.value, 10);
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+      showToast("할인율을 1-100 사이로 입력하세요.", "error");
+      return;
+    }
+    const startsAt = localInputToISO(els.discountStart.value);
+    const endsAt = localInputToISO(els.discountEnd.value);
+    if (startsAt && endsAt && new Date(endsAt) <= new Date(startsAt)) {
+      showToast("종료 일시가 시작 일시보다 늦어야 합니다.", "error");
+      return;
+    }
+    const discount = { percent };
+    if (startsAt) discount.startsAt = startsAt;
+    if (endsAt) discount.endsAt = endsAt;
+    const key = currentDiscountKey;
+    closeDiscountModal();
+    await persistDiscount(key, discount);
+    showToast(`${percent}% 할인이 저장되었습니다.`, "success");
+  });
+}
+if (els.discountRemove) {
+  els.discountRemove.addEventListener("click", async () => {
+    if (!currentDiscountKey) return;
+    if (!confirm("이 카드의 할인을 제거할까요?")) return;
+    const key = currentDiscountKey;
+    closeDiscountModal();
+    await persistDiscount(key, null);
+    showToast("할인이 제거되었습니다.", "success");
+  });
+}
+if (els.discountCancel) els.discountCancel.addEventListener("click", closeDiscountModal);
+if (els.discountModalBackdrop) els.discountModalBackdrop.addEventListener("click", closeDiscountModal);
 
 // Sets (확장팩 라벨)
 if (els.setsForm) {

@@ -977,6 +977,18 @@ td.no-cell .no-text { vertical-align: middle; }
 }
 .market-card.has-image { cursor: zoom-in; }
 .market-card.sold-out .market-card-price { color: var(--muted); text-decoration: line-through; }
+.market-card.sold-out .market-card-final { color: var(--muted); text-decoration: line-through; }
+.market-card.sold-out .market-card-image img {
+  opacity: 0.45;
+  filter: grayscale(60%);
+}
+.market-card.sold-out .market-card-image::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 24, 36, 0.18);
+  pointer-events: none;
+}
 
 .market-card-image {
   position: relative;
@@ -1450,6 +1462,176 @@ body.modal-open { overflow: hidden; }
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+/* Discount: admin button + modal + buyer card */
+.discount-cell { white-space: nowrap; }
+
+.discount-btn {
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  color: var(--muted);
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 120ms, border-color 120ms, color 120ms;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+.discount-btn:hover { background: var(--surface-2); color: var(--text); border-color: var(--primary); }
+.discount-btn .percent { font-size: 13px; font-weight: 800; }
+.discount-btn .sub { font-size: 10.5px; font-weight: 500; opacity: 0.85; }
+.discount-btn.active {
+  background: #fde7eb;
+  border-color: var(--danger);
+  color: var(--danger);
+  border-style: solid;
+}
+.discount-btn.scheduled {
+  background: #fff4d6;
+  border-color: var(--accent);
+  color: #8a5b07;
+  border-style: solid;
+}
+.discount-btn.expired {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--muted);
+}
+.discount-btn.expired .percent { text-decoration: line-through; }
+.discount-btn.empty { font-weight: 500; }
+
+/* Discount modal */
+.discount-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 160;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.discount-modal[hidden] { display: none; }
+.discount-modal .modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 22, 0.55);
+}
+.discount-modal .modal-content {
+  position: relative;
+  background: #fff;
+  border-radius: 16px;
+  padding: 24px;
+  width: min(440px, 100%);
+  box-shadow: var(--shadow-lg);
+}
+.discount-modal .modal-content h2 { margin: 0 0 4px; font-size: 18px; }
+.discount-modal .modal-sub {
+  margin: 0 0 18px;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.discount-field { margin-bottom: 12px; }
+.discount-field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text-soft);
+}
+.discount-field label small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+.discount-field input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text);
+}
+.discount-field input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(79, 92, 238, 0.15);
+}
+.discount-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+.discount-modal-actions .btn-danger { margin-right: auto; }
+
+/* Buyer card discount */
+.market-card-deal-strip {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 999px;
+  z-index: 2;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  box-shadow: 0 2px 8px rgba(224, 71, 62, 0.4);
+}
+.market-card-prices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.1;
+  min-width: 0;
+}
+.market-card-price-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.market-card-percent {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: var(--danger);
+  letter-spacing: -0.01em;
+}
+.market-card-orig {
+  font-size: 11.5px;
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.market-card-final {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+/* Cart item discount inline */
+.cart-item-percent {
+  color: var(--danger);
+  font-weight: 700;
+  margin-right: 2px;
+}
+
+/* Discount tag in admin request result */
+.discount-tag {
+  display: inline-block;
+  background: #fde7eb;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 4px;
+  margin-left: 6px;
 }
 
 /* Toast */
