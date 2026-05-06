@@ -24,12 +24,9 @@ let currentUser = null;
 let items = new Map();
 // sets: prefix -> name (예: "sv10" -> "로켓단의 영광")
 let sets = new Map();
-// catalog: key -> { no, name, grade, value } (마스터 카탈로그)
-let catalog = new Map();
 
 let inventoryUnsub = null;
 let setsUnsub = null;
-let catalogUnsub = null;
 let initialLoaded = false;
 let migrationAttempted = false;
 
@@ -132,9 +129,6 @@ const els = {
   discountCancel: $("discount-cancel"),
 
   imageFormatOn: $("image-format-on"),
-
-  ocrBtn: $("ocr-btn"),
-  ocrFile: $("ocr-file"),
 };
 
 let currentUploadKey = null;
@@ -408,7 +402,6 @@ async function importFromText(text) {
   }
   items = next;
   await saveInventory();
-  await bulkUpdateCatalog(Array.from(next.values()));
   renderAll();
   showToast(`가져오기 완료: 신규 ${added}건, 업데이트 ${updated}건`, "success");
 }
@@ -1133,7 +1126,7 @@ async function uploadCardImage(key, file) {
   showToast(imageAutoFormat ? "사진 자동 정렬 중…" : "이미지 업로드 중…");
   try {
     const blob = imageAutoFormat
-      ? await formatCardImage(file, { outputSize: 1000, cardSizeRatio: 0.9 })
+      ? await formatCardImage(file, { outputSize: 1000, cardSizeRatio: 0.78 })
       : await resizeImage(file, 900, 0.85);
     const path = `cards/${safeStoragePath(k)}.jpg`;
     const ref = storageRef(storage, path);
@@ -1289,303 +1282,6 @@ function renderSets() {
       <button class="icon-btn danger" data-set-remove="${escapeAttr(prefix)}" type="button" aria-label="삭제">×</button>
     `;
     list.appendChild(item);
-  }
-}
-
-// ---------- Master catalog ----------
-function catalogDocRef() { return doc(db, "public", "catalog"); }
-
-function attachCatalogListener() {
-  if (catalogUnsub) catalogUnsub();
-  catalogUnsub = onSnapshot(
-    catalogDocRef(),
-    (snap) => {
-      const data = snap.exists() ? snap.data() : null;
-      const obj = (data && data.items) || {};
-      catalog = new Map(Object.entries(obj));
-    },
-    (err) => console.warn("catalog snapshot error", err),
-  );
-}
-
-async function saveCatalog() {
-  if (!isOwner(currentUser)) return;
-  const obj = {};
-  for (const [k, v] of catalog) obj[k] = v;
-  beginSaving();
-  try {
-    await setDoc(catalogDocRef(), {
-      items: obj,
-      updatedAt: serverTimestamp(),
-      updatedBy: currentUser?.email || null,
-    });
-  } catch (e) {
-    console.error("saveCatalog failed", e);
-  } finally {
-    endSaving();
-  }
-}
-
-function lookupCatalog(no) {
-  const k = normalizeKey(no);
-  return catalog.get(k) || items.get(k) || null;
-}
-
-async function maybeUpdateCatalog(item) {
-  if (!isOwner(currentUser)) return;
-  if (!item || !item.no) return;
-  const k = normalizeKey(item.no);
-  const existing = catalog.get(k);
-  const next = {
-    no: item.no,
-    name: item.name || (existing && existing.name) || "",
-    grade: item.grade || (existing && existing.grade) || "",
-    value: item.value || (existing && existing.value) || 0,
-  };
-  if (existing &&
-      existing.no === next.no &&
-      existing.name === next.name &&
-      existing.grade === next.grade &&
-      existing.value === next.value) return;
-  if (!next.name && !next.value) return;
-  catalog.set(k, next);
-  await saveCatalog();
-}
-
-async function bulkUpdateCatalog(itemsArray) {
-  if (!isOwner(currentUser)) return;
-  if (!itemsArray || itemsArray.length === 0) return;
-  let changed = false;
-  for (const item of itemsArray) {
-    if (!item || !item.no) continue;
-    const k = normalizeKey(item.no);
-    const existing = catalog.get(k);
-    const next = {
-      no: item.no,
-      name: item.name || (existing && existing.name) || "",
-      grade: item.grade || (existing && existing.grade) || "",
-      value: item.value || (existing && existing.value) || 0,
-    };
-    if (!next.name && !next.value) continue;
-    if (existing &&
-        existing.no === next.no &&
-        existing.name === next.name &&
-        existing.grade === next.grade &&
-        existing.value === next.value) continue;
-    catalog.set(k, next);
-    changed = true;
-  }
-  if (changed) await saveCatalog();
-}
-
-// ---------- OCR (Tesseract.js) ----------
-let pendingOcrFile = null;
-let tesseractCache = null;
-
-async function loadTesseract() {
-  if (tesseractCache) return tesseractCache;
-  if (window.Tesseract) {
-    tesseractCache = window.Tesseract;
-    return tesseractCache;
-  }
-  await new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
-    script.onload = resolve;
-    script.onerror = () => reject(new Error("OCR 엔진 로드 실패"));
-    document.head.appendChild(script);
-  });
-  tesseractCache = window.Tesseract;
-  if (!tesseractCache) throw new Error("OCR 엔진을 사용할 수 없습니다.");
-  return tesseractCache;
-}
-
-function normalizeOcrSerial(setCode, num) {
-  const s = setCode.toLowerCase();
-  const n = String(num).replace(/\D/g, "").padStart(3, "0").slice(-3);
-  return `${s}-${n}`;
-}
-
-function extractSerial(text) {
-  if (!text) return null;
-  // Common OCR 혼동 보정 (대문자 O → 0, 숫자 옆 I/l/| → 1, 한글 점 → slash)
-  const cleaned = text
-    .replace(/O/g, "0")
-    .replace(/[Il|](?=\d)/g, "1")
-    .replace(/(?<=\d)[Il|]/g, "1")
-    .replace(/\s*[ㆍ·•]\s*/g, "/");
-
-  // ① 확장팩 코드 (sv + 숫자 + 선택 글자) — 텍스트 어디든
-  const setRe = /\bsv\s*(\d+\s*[a-zA-Z]?)\b/i;
-  const setM = cleaned.match(setRe);
-
-  // ② 카드 번호 X/Y (1-4자리, X ≤ Y, Y < 1000) — 텍스트 어디든
-  let chosenX = null;
-  const numRe = /\b(\d{1,4})\s*\/\s*(\d{1,4})\b/g;
-  let m;
-  while ((m = numRe.exec(cleaned)) !== null) {
-    const x = parseInt(m[1], 10);
-    const y = parseInt(m[2], 10);
-    if (x > 0 && y > 0 && x <= y && y < 1000) {
-      chosenX = m[1];
-      break;
-    }
-  }
-
-  // ①+② 조합 (가장 일반적인 케이스: 확장팩 코드와 X/Y가 카드 다른 위치에 있음)
-  if (setM && chosenX) {
-    return normalizeOcrSerial("sv" + setM[1].replace(/\s+/g, ""), chosenX);
-  }
-
-  // 폴백 1: 인접 패턴 "sv10-032" / "sv10 032"
-  const re1 = /(sv\d+[a-zA-Z]?)\s*[-_/]?\s*(\d{2,4})/i;
-  const m1 = cleaned.match(re1);
-  if (m1) return normalizeOcrSerial(m1[1], m1[2]);
-
-  // 폴백 2: "032/198 sv10"
-  const re2 = /(\d{2,4})\s*\/\s*\d{2,4}\s+(sv\d+[a-zA-Z]?)/i;
-  const m2 = cleaned.match(re2);
-  if (m2) return normalizeOcrSerial(m2[2], m2[1]);
-
-  return null;
-}
-
-async function cropForOCR(file) {
-  // 카드 좌하단 (확장팩 코드 + 카드번호가 있는 영역) 만 잘라서
-  // OCR 노이즈를 줄이고 정확도를 끌어올림.
-  const dataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("파일 읽기 실패"));
-    reader.readAsDataURL(file);
-  });
-  const img = await new Promise((resolve, reject) => {
-    const im = new Image();
-    im.onload = () => resolve(im);
-    im.onerror = () => reject(new Error("이미지 로드 실패"));
-    im.src = dataUrl;
-  });
-  // 좌측 60%, 하단 25% 영역
-  const cropX = 0;
-  const cropY = Math.floor(img.height * 0.74);
-  const cropW = Math.floor(img.width * 0.6);
-  const cropH = img.height - cropY;
-  // OCR 정확도용 업스케일 (작은 텍스트 인식)
-  const minOutWidth = 900;
-  const scale = Math.max(1, minOutWidth / cropW);
-  const outW = Math.round(cropW * scale);
-  const outH = Math.round(cropH * scale);
-  const canvas = document.createElement("canvas");
-  canvas.width = outW;
-  canvas.height = outH;
-  const ctx = canvas.getContext("2d");
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
-  return await new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error("이미지 변환 실패"))),
-      "image/png",
-    );
-  });
-}
-
-async function invertImage(blob) {
-  const dataUrl = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("파일 읽기 실패"));
-    reader.readAsDataURL(blob);
-  });
-  const img = await new Promise((resolve, reject) => {
-    const im = new Image();
-    im.onload = () => resolve(im);
-    im.onerror = () => reject(new Error("이미지 로드 실패"));
-    im.src = dataUrl;
-  });
-  const canvas = document.createElement("canvas");
-  canvas.width = img.width;
-  canvas.height = img.height;
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(img, 0, 0);
-  const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const pixels = data.data;
-  for (let i = 0; i < pixels.length; i += 4) {
-    pixels[i] = 255 - pixels[i];
-    pixels[i + 1] = 255 - pixels[i + 1];
-    pixels[i + 2] = 255 - pixels[i + 2];
-  }
-  ctx.putImageData(data, 0, 0);
-  return await new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("invert toBlob 실패"))),
-      "image/png",
-    );
-  });
-}
-
-async function runOCR(file) {
-  const T = await loadTesseract();
-  showToast("일련번호 인식 중…");
-  let target;
-  try {
-    target = await cropForOCR(file);
-  } catch (e) {
-    console.warn("OCR crop failed, using original", e);
-    target = file;
-  }
-  const ocrParams = {
-    tessedit_char_whitelist: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ/-",
-    logger: () => {},
-  };
-  // 카드의 일부 텍스트 (예: SV10) 는 흰글자/검정배경의 반전 표기.
-  // 원본과 반전 모두 OCR 후 결과를 합쳐서 일련번호 추출.
-  let inverted = null;
-  try { inverted = await invertImage(target); } catch (e) { console.warn("invert failed", e); }
-  const tasks = [T.recognize(target, "eng", ocrParams)];
-  if (inverted) tasks.push(T.recognize(inverted, "eng", ocrParams));
-  const results = await Promise.all(tasks);
-  const text = results.map((r) => r?.data?.text || "").join("\n");
-  return { text, serial: extractSerial(text) };
-}
-
-async function handleOcrFile(file) {
-  if (!file) return;
-  if (!isOwner(currentUser)) return;
-  try {
-    const { serial, text } = await runOCR(file);
-    if (!serial) {
-      const preview = (text || "").replace(/\n+/g, " ").trim().slice(0, 80);
-      showToast(
-        `일련번호를 찾지 못했습니다. ${preview ? `OCR 결과: "${preview}…"` : "사진을 더 선명하게 다시 시도해 주세요."}`,
-        "error",
-      );
-      console.log("OCR full text:", text);
-      pendingOcrFile = file;
-      els.cardPreview.textContent = "📷 사진은 준비됨 (일련번호는 직접 입력 후 추가)";
-      els.cardPreview.classList.add("found");
-      els.cardPreview.classList.remove("error");
-      els.cardNo.focus();
-      return;
-    }
-    els.cardNo.value = serial;
-    pendingOcrFile = file;
-    const meta = lookupCatalog(serial);
-    if (meta) {
-      if (meta.name) els.cardName.value = meta.name;
-      if (meta.grade) els.cardGrade.value = meta.grade;
-      if (meta.value) els.cardValue.value = meta.value;
-      showToast(`인식 완료: ${serial}${meta.name ? " · " + meta.name : ""}`, "success");
-    } else {
-      showToast(`인식: ${serial} (카탈로그에 없음 — 직접 입력)`, "success");
-    }
-    els.cardPreview.textContent = `📷 ${serial} 인식됨${pendingOcrFile ? " (저장 시 사진도 함께 업로드)" : ""}`;
-    els.cardPreview.classList.add("found");
-    els.cardPreview.classList.remove("error");
-    els.cardName.focus();
-  } catch (err) {
-    console.error("OCR failed", err);
-    showToast("OCR 실패: " + (err.message || err), "error");
   }
 }
 
@@ -2222,11 +1918,6 @@ els.addForm.addEventListener("submit", async (e) => {
   if (!no) return;
   const result = await upsertCard({ no, name, grade, state, value, qty }, "merge");
   if (result.ok) {
-    await maybeUpdateCatalog(result.item);
-    if (pendingOcrFile) {
-      await uploadCardImage(result.item.no, pendingOcrFile);
-      pendingOcrFile = null;
-    }
     showToast(
       result.wasNew ? `추가됨: ${result.item.no}` : `수량 업데이트: ${result.item.no} (${result.item.qty}장)`,
       "success",
@@ -2571,23 +2262,6 @@ if (els.discountRemove) {
 if (els.discountCancel) els.discountCancel.addEventListener("click", closeDiscountModal);
 if (els.discountModalBackdrop) els.discountModalBackdrop.addEventListener("click", closeDiscountModal);
 
-// OCR button
-if (els.ocrBtn) {
-  els.ocrBtn.addEventListener("click", () => {
-    if (!isOwner(currentUser)) return;
-    els.ocrFile.value = "";
-    els.ocrFile.click();
-  });
-}
-if (els.ocrFile) {
-  els.ocrFile.addEventListener("change", async (e) => {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (!file) return;
-    await handleOcrFile(file);
-  });
-}
-
 // Image auto-format toggle
 if (els.imageFormatOn) {
   els.imageFormatOn.checked = imageAutoFormat;
@@ -2662,7 +2336,6 @@ onAuthStateChanged(auth, (user) => {
 // Initial public read attempt even before auth state resolves.
 attachInventoryListener();
 attachSetsListener();
-attachCatalogListener();
 renderAll();
 renderCart();
 renderSets();

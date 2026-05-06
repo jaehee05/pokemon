@@ -1464,23 +1464,6 @@ body.modal-open { overflow: hidden; }
   justify-content: flex-end;
 }
 
-/* OCR action */
-.ocr-action {
-  margin-top: 14px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-.ocr-btn { font-weight: 600; }
-.ocr-hint {
-  flex: 1;
-  min-width: 220px;
-  font-size: 12.5px;
-  color: var(--muted);
-  line-height: 1.45;
-}
-
 /* Image auto-format toggle */
 .format-toggle {
   display: flex;
