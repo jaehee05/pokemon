@@ -41,7 +41,7 @@
   --radius-sm: 8px;
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: rgba(79, 92, 238, 0.12); }
 
 html, body {
   margin: 0;
@@ -54,6 +54,9 @@ html, body {
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overflow-x: hidden;
 }
 
 a { color: var(--primary); }
@@ -114,6 +117,8 @@ code {
 }
 .brand:hover { background: rgba(255, 255, 255, 0.22); }
 .brand:active { transform: scale(0.97); }
+.brand { touch-action: manipulation; min-height: 28px; }
+.btn, .icon-btn, .chip, .market-card-add, .cart-fab, .thumb-btn { touch-action: manipulation; }
 .logo-dot {
   width: 8px;
   height: 8px;
@@ -1078,8 +1083,8 @@ body.lightbox-open { overflow: hidden; }
 /* Cart FAB */
 .cart-fab {
   position: fixed;
-  bottom: 20px;
-  right: 20px;
+  bottom: max(20px, calc(env(safe-area-inset-bottom) + 12px));
+  right: max(20px, calc(env(safe-area-inset-right) + 12px));
   z-index: 90;
   display: inline-flex;
   align-items: center;
@@ -1217,7 +1222,7 @@ body.lightbox-open { overflow: hidden; }
 .cart-item-remove { padding: 4px 8px; }
 .cart-drawer-footer {
   border-top: 1px solid var(--border);
-  padding: 14px 20px 18px;
+  padding: 14px 20px max(18px, calc(env(safe-area-inset-bottom) + 12px));
   background: #fff;
 }
 .cart-drawer-total {
@@ -1237,6 +1242,7 @@ body.lightbox-open { overflow: hidden; }
 .cart-drawer-actions .btn { flex: 1; }
 .cart-drawer-actions .btn-primary { flex: 2; }
 body.drawer-open { overflow: hidden; }
+body.drawer-open .cart-fab { display: none; }
 
 /* Code modal */
 .code-modal {
@@ -1409,10 +1415,101 @@ body.modal-open { overflow: hidden; }
   .panel-header { flex-direction: column; align-items: flex-start; }
   .add-form { grid-template-columns: 1fr 1fr; gap: 6px; }
   .filters { gap: 6px; }
-  .btn { padding: 7px 11px; font-size: 13.5px; }
+  .btn { padding: 9px 12px; font-size: 14px; min-height: 40px; }
   thead th, tbody td { padding: 8px 10px; }
   td .value-input { width: 72px; }
   td .qty-input { width: 48px; }
   .stats { grid-template-columns: 1fr 1fr; }
   .stat:last-of-type { grid-column: 1 / -1; }
+
+  /* iOS 입력 자동 줌 방지 (16px 미만이면 확대됨) */
+  input[type="text"],
+  input[type="number"],
+  input[type="search"],
+  input[type="email"],
+  textarea,
+  select { font-size: 16px; }
+
+  /* 필터 칩 가로 스크롤 */
+  .filters { flex-wrap: wrap; }
+  .grade-filter {
+    max-width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 4px;
+  }
+  .grade-filter::-webkit-scrollbar { display: none; }
+  .chip { flex-shrink: 0; }
+  #inventory-search { max-width: 100%; flex: 1 1 100%; }
+  .sort-select-buyer { flex: 1; }
+  .action-spacer { display: none; }
+
+  /* 카드 본문 압축 */
+  .market-card-body { padding: 10px 12px 12px; }
+  .market-card-title { font-size: 13.5px; min-height: 34px; }
+  .market-card-price { font-size: 15px; }
+  .market-card-add { padding: 6px 10px; font-size: 12px; }
+  .market-card-state, .market-card-stock-badge { font-size: 11px; padding: 2px 7px; }
+
+  /* 라이트박스 풀스크린 */
+  .lightbox { padding: 0; }
+  .lightbox-img { max-width: 100vw; max-height: 100vh; border-radius: 0; }
+  .lightbox-close { top: max(12px, env(safe-area-inset-top)); right: 12px; }
+
+  /* 카트 FAB 압축 */
+  .cart-fab { padding: 11px 16px 11px 14px; font-size: 13.5px; }
+  .cart-fab-label { display: none; }
+
+  /* 코드 모달 작게 */
+  .code-modal { padding: 16px; }
+  .code-modal-content { padding: 22px 20px 20px; }
+  .code-display { font-size: 30px; padding: 14px; letter-spacing: 0.14em; }
+
+  /* 관리자 요청 코드 입력 */
+  .request-lookup { flex-wrap: wrap; }
+  .request-lookup input { max-width: 100%; flex: 1 1 100%; }
+  .request-code { font-size: 16px; }
+  .request-table { font-size: 12.5px; }
+  .request-actions { flex-wrap: wrap; }
+  .request-actions .btn { flex: 1; }
+
+  /* 통계 라벨 줄바꿈 방지 */
+  .stat-label { white-space: nowrap; }
+}
+
+/* 카트 드로어: 좁은 화면에서 풀스크린 */
+@media (max-width: 600px) {
+  .cart-drawer { width: 100%; box-shadow: none; }
+  .cart-drawer-header { padding: 14px 16px; }
+  .cart-drawer-body { padding: 10px 14px; }
+  .cart-drawer-footer { padding-left: 16px; padding-right: 16px; }
+}
+
+/* 카드 그리드 더 좁은 화면 */
+@media (max-width: 540px) {
+  main { padding: 0 12px 32px; }
+  .card-grid { gap: 10px; grid-template-columns: repeat(2, 1fr); }
+  .panel { padding: 14px; border-radius: 10px; }
+  .panel-header h2 { font-size: 16px; }
+  .panel-sub { font-size: 12.5px; }
+}
+
+/* 카트 항목: 좁은 화면에서 2줄 레이아웃 */
+@media (max-width: 480px) {
+  .cart-item {
+    grid-template-columns: 48px 1fr auto;
+    grid-template-areas:
+      "thumb info remove"
+      "thumb qty qty";
+    column-gap: 8px;
+    row-gap: 6px;
+    padding: 8px;
+  }
+  .cart-item-thumb { grid-area: thumb; width: 48px; height: 48px; }
+  .cart-item-info { grid-area: info; }
+  .cart-item-qty { grid-area: qty; justify-self: end; }
+  .cart-item-remove { grid-area: remove; align-self: start; }
 }
