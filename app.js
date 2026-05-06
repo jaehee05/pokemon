@@ -1879,30 +1879,40 @@ async function removeCard(key) {
 }
 
 // ---------- Auth handlers ----------
-function shouldUseAuthRedirect() {
-  const ua = navigator.userAgent || "";
-  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-  const isAndroid = /Android/.test(ua);
-  const isSafari = /Safari/.test(ua) && !/Chrome|CriOS|FxiOS|Edg|OPR/.test(ua);
-  // 모바일 또는 Safari는 popup이 자주 막혀서 redirect 사용
-  return isIOS || isAndroid || isSafari;
-}
+let loginInProgress = false;
 
 async function handleLogin() {
+  if (loginInProgress) return;
+  loginInProgress = true;
+  showToast("로그인 시도 중…");
+  setSyncStatus("connecting", "로그인 중…");
   try {
-    setSyncStatus("connecting", "로그인 중…");
-    if (shouldUseAuthRedirect()) {
-      await signInWithRedirect(auth, googleProvider);
-      // 페이지가 Google로 이동했다가 돌아옴 — 이후 코드 실행 안 됨
-    } else {
+    // 1차 시도: popup
+    try {
       await signInWithPopup(auth, googleProvider);
+      return; // 성공 시 onAuthStateChanged가 발화됨
+    } catch (popupErr) {
+      console.warn("popup login failed", popupErr);
+      const code = popupErr && popupErr.code;
+      if (code === "auth/popup-closed-by-user") return;
+      if (code === "auth/cancelled-popup-request") return;
+      // popup 차단/미지원이면 redirect 로 폴백
+      if (code === "auth/popup-blocked" ||
+          code === "auth/operation-not-supported-in-this-environment" ||
+          code === "auth/web-storage-unsupported" ||
+          /cancel/i.test(popupErr.message || "")) {
+        showToast("팝업이 차단되어 페이지 이동 방식으로 시도합니다…");
+        await signInWithRedirect(auth, googleProvider);
+        return; // 페이지가 Google로 이동
+      }
+      throw popupErr;
     }
   } catch (err) {
     console.error("login failed", err);
     refreshSyncStatus();
-    if (err && err.code === "auth/popup-closed-by-user") return;
-    if (err && err.code === "auth/cancelled-popup-request") return;
-    showToast("로그인 실패: " + (err.message || err), "error");
+    showToast(`로그인 실패: ${(err && (err.code || err.message)) || err}`, "error");
+  } finally {
+    loginInProgress = false;
   }
 }
 
@@ -2462,13 +2472,18 @@ setSyncStatus("connecting");
 renderAuthArea();
 applyOwnerMode();
 
-// signInWithRedirect 후 페이지 복귀 처리 (모바일/Safari 경로)
-getRedirectResult(auth).catch((err) => {
-  console.error("redirect result error", err);
-  if (err && err.code) {
-    showToast("로그인 실패: " + (err.message || err.code), "error");
-  }
-});
+// signInWithRedirect 후 페이지 복귀 처리
+getRedirectResult(auth)
+  .then((result) => {
+    console.log("[auth] redirect result:", result);
+    if (result && result.user) {
+      // onAuthStateChanged가 별도로 토스트 표시함
+    }
+  })
+  .catch((err) => {
+    console.error("redirect result error", err);
+    showToast(`redirect 로그인 실패: ${err.code || err.message || err}`, "error");
+  });
 
 let lastLoggedInUid = null;
 onAuthStateChanged(auth, (user) => {
