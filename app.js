@@ -246,6 +246,10 @@ function isDiscountExpired(d, now = new Date()) {
 function getEffectivePrice(item) {
   const v = parseInt0(item && item.value);
   if (!item || !isDiscountActive(item.discount)) return v;
+  // 할인 후 금액이 직접 지정되어 있으면 그 값을 그대로 사용 (퍼센트 반올림 오차 방지)
+  if (item.discount.finalPrice != null && Number.isFinite(Number(item.discount.finalPrice))) {
+    return Math.max(0, parseInt0(item.discount.finalPrice));
+  }
   const p = item.discount.percent || 0;
   return Math.max(0, Math.round((v * (100 - p)) / 100));
 }
@@ -1028,7 +1032,9 @@ function openDiscountModal(key) {
   const d = entry.discount || {};
   const percent = d.percent || "";
   els.discountPercent.value = percent;
-  if (percent && currentDiscountOriginal > 0) {
+  if (d.finalPrice != null && Number.isFinite(Number(d.finalPrice))) {
+    els.discountFinal.value = parseInt0(d.finalPrice);
+  } else if (percent && currentDiscountOriginal > 0) {
     els.discountFinal.value = Math.round((currentDiscountOriginal * (100 - percent)) / 100);
   } else {
     els.discountFinal.value = "";
@@ -2367,6 +2373,12 @@ if (els.discountForm) {
       return;
     }
     const discount = { percent };
+    // 할인 후 금액이 입력되어 있으면 정확한 값 그대로 저장
+    const finalRaw = els.discountFinal.value;
+    if (finalRaw !== "" && Number.isFinite(Number(finalRaw)) && currentDiscountOriginal > 0) {
+      const fp = Math.max(0, Math.min(currentDiscountOriginal, parseInt0(finalRaw)));
+      discount.finalPrice = fp;
+    }
     if (startsAt) discount.startsAt = startsAt;
     if (endsAt) discount.endsAt = endsAt;
     const key = currentDiscountKey;
